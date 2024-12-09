@@ -1,0 +1,2 @@
+# bad data
+This data was taken with Q = 500, not required Q = 700
