@@ -20,8 +20,4 @@ Raw LI-COR data from weekly measurements. Excel and text log files are available
 
 Net photosynthetic CO~2~ assimilation rates for a single cacao leaf in the Biosphere 2 tropical rainforest biome. This data was used to determine the light intensity for measurements using the LI-COR sampling device.
 
-### TC_Calibration
 
-2 point calibrations were performed for each thermocouple (TC) used in the heating and control device. The TCs were used to measure heating pad and leaf temperatures.
-
-The coefficients were entered into the heating and control device's configuration file to ensure accurate readings for each experiment.
