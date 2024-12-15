@@ -1,0 +1,30 @@
+---
+title: "Biosphere 2 Cacao Leaf Light Curve"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# bryan_blue_thesis_UA_fall_2024
+
+EFFECTS OF IN SITU LEAF WARMING ON NET PHOTOSYNTHETIC CO~2~ ASSIMILATION IN *THEOBROMA CACAO* L. (cacao):  A STUDY IN THE BIOSPHERE 2 TROPICAL RAINFOREST
+
+Bryan P. Blue ^a^, Bonnie L. Hurwitz ^b^ , Gene A. Giacomelli ^b^ , Joost van Haren ^c,d^
+
+A partial thesis fulfillment to the Department of Biosystems Engineering, College of Agriculture, Life and Environmental Sciences at the University of Arizona.
+
+# NET PHOTOSYNTHETIC CO~2~ ASSIMILATION
+
+**Visual Studio Code Project**
+
+Data collected by researchers at Biosphere 2 for one cacao leaf has the net photosynthetic CO~2~ assimilation rate plotted using Quarto.
+
+Previous research optimal Q and the selected experiment Q (700) values are shown with vertical lines.
+
+## Running
+
+Be sure the `renv` package manager is used and `renv::activate()` runs before any scripts.
+
+Run `cacao_light_curve.qmd` which will generate a PNG and TIFF file in the `.figures/` folder.
