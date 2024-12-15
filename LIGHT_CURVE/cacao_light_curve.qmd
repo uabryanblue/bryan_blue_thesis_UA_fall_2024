@@ -1,0 +1,131 @@
+---
+title: "Cacao Light Curve"
+author: "Bryan Blue"
+
+execute:
+  echo: false
+format: 
+  html:
+    code-fold: true
+    fig-width: 8
+    fig-height: 6
+  pdf:
+    fig-width: 8
+    fig-height: 6
+---
+
+
+```{r init}
+#| echo: false
+#| warning: false
+#| include: false
+
+# https://www.regextester.com/ for regex checking
+
+# advanced conflict resolution
+# https://conflicted.r-lib.org/
+# install.packages("devtools")
+library(conflicted)
+
+library(here)
+conflicts_prefer(here::here)
+
+
+library(dplyr)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::arrange)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::summarize)
+conflicts_prefer(dplyr::mutate)
+
+library(lubridate)
+library(tidyr)
+library(ggplot2)
+# library(patchwork)
+
+library(readxl)
+
+# start in the current project directory
+# this ensures relative paths will work
+# independent of the location the script
+here::here()
+
+# constants to data paths
+DATARAW <- "data_raw" # TREAT READ ONLY. Raw LICOR data logs.
+DATACLEAN <- "data_clean" # files generated from data_raw through data wrangling
+DATAUSER <- "data_user" # data the user manually enters or manipulates
+FIGSTORAGE <- "figures" # the relative path to store ggplots
+
+```
+
+```{r load_data}
+
+Summer2022_lightCurves_TRF_CA <- read_excel(here(DATARAW, "Summer2022_lightCurves_TRF_CA.xlsx"), 
+                                            col_types = c("text", "date", "text", 
+                                                          "numeric", "numeric", "numeric", 
+                                                          "numeric", "numeric", "numeric"), 
+                                            n_max = 9)
+View(Summer2022_lightCurves_TRF_CA)
+
+```
+
+```{r plot_A}
+#| error: false
+#| warning: false
+
+plot_data <- Summer2022_lightCurves_TRF_CA %>%
+  filter(A < 4)
+
+ggplot(data = plot_data, 
+       aes(x = Light, y = A, color = "A")) +
+  
+  # aes(x = Date, y = VPD.mean, color = "VPD Mean")) +
+  geom_point(size = 3) +
+  
+  geom_smooth(se = FALSE, color = "red") +
+  geom_vline(xintercept=700, color="black") +
+  geom_vline(xintercept=500, color="blue") +
+  
+  labs(title="Biosphere 2 Cacao Leaf Light Curve 1-7-2022") + 
+       #subtitle='Values of A taken with increasing light intensity (Q).') + #,
+       # caption="The black line is located at the selected\n 
+       # LI-COR intensity (Q) of 700 (µmol m-2 s-1).\n
+       # The blue line is located at the upper end\n
+       # of other reported light saturation values of 500 (µmol m-2 s-1).\n
+       # LOES (locally weighted scatterplot smoothing) line is shown in red.") + 
+  # ggtitle("Cacao Light Curve 1-7-2022") +
+  xlab("Q (µmol m-2 s-1)") +
+  ylab("A (µmol m-2 s-1)") +
+  scale_color_manual(name='',
+                     breaks=c('A', 'gsw', 'T Mean'),
+                     values=c('gsw'='#619CFF', 'T Mean'='#F8766D', 'A'='darkorange')) +
+  # scale_x_datetime(date_breaks = "1 week",
+  #                  date_minor_breaks = "1 day",
+  #                  date_labels = "%b %d") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) #+
+
+# TIFF files are required by some publications
+plot_name <- "light_curve_20220107_with_700setpoint.tif"
+ggsave(here(FIGSTORAGE, plot_name), 
+      device = "tiff", 
+       plot = last_plot(), 
+       width = 6, 
+       height = 4,
+       units = "in")
+
+# PNG lightweight image for general documents/websites
+plot_name <- "light_curve_20220107_with_700setpoint.png"
+ggsave(here(FIGSTORAGE, plot_name), 
+      device = "png", 
+       plot = last_plot(), 
+       width = 6, 
+       height = 4,
+       units = "in")
+
+
+
+
+
+```
+
