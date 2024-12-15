@@ -1,0 +1,4 @@
+# data loss
+Sensors stopped working for an unknown reason which was reflectted in DL1 and DL2 data files that were the same.  
+  
+Nothing was done, there was loss of data.

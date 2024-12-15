@@ -1,0 +1,4 @@
+# DL2 stopped working
+DL2 stopped working after less than a day. The data was recorded on DL1 and no data was lost.  
+  
+The reason was unknown, most likely faulty microSD card.

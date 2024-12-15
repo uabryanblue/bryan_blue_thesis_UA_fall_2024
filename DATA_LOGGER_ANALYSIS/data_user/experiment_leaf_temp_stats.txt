@@ -1,0 +1,152 @@
+Bryan Blue Winter 2024 Thesis
+
+"======================================================"
+[1] "Experiment: 2"
+[1] "HEATED LEAF (T1):  mean: 31.1 sd: 1.5"
+[1] "UNHEATED LEAF (T2):  mean: 28.5 sd: 2"
+[1] "CONTROL LEAF (T3):  mean: 27.8 sd: 1.3"
+[1] "======================================================"
+[1] "ANOVA Heated vs. Unheated"
+[1] "======================================================"
+[1] "Experiment: 2"
+[1] "paired t-test"
+[1] "HEATED vs. CONTROL LEAF (T1 vs T3)"
+
+	Paired t-test
+
+data:  tdiff$T1 and tdiff$T3
+t = 1167.3, df = 45312, p-value < 2.2e-16
+alternative hypothesis: true mean difference is not equal to 0
+95 percent confidence interval:
+ 3.306392 3.317514
+sample estimates:
+mean difference 
+       3.311953 
+
+[1] "UNHEATED vs. CONTROL LEAF (T2 vs T3)"
+
+	Paired t-test
+
+data:  tdiff$T2 and tdiff$T3
+t = 140.64, df = 45312, p-value < 2.2e-16
+alternative hypothesis: true mean difference is not equal to 0
+95 percent confidence interval:
+ 0.7065160 0.7264868
+sample estimates:
+mean difference 
+      0.7165014 
+
+[1] "HEATED vs. UNHEATED LEAF (T1 vs T2)"
+
+	Paired t-test
+
+data:  tdiff$T1 and tdiff$T2
+t = 574.59, df = 45312, p-value < 2.2e-16
+alternative hypothesis: true mean difference is not equal to 0
+95 percent confidence interval:
+ 2.586598 2.604305
+sample estimates:
+mean difference 
+       2.595452 
+
+[1] "======================================================"
+[1] "======================================================"
+[1] "Experiment: 3-1"
+[1] "HEATED LEAF (T1):  mean: 28.9 sd: 1.4"
+[1] "UNHEATED LEAF (T2):  mean: 28.2 sd: 1.4"
+[1] "CONTROL LEAF (T3):  mean: 28.5 sd: 1.4"
+[1] "======================================================"
+[1] "ANOVA Heated vs. Unheated"
+[1] "======================================================"
+[1] "Experiment: 3-1"
+[1] "paired t-test"
+[1] "HEATED vs. CONTROL LEAF (T1 vs T3)"
+
+	Paired t-test
+
+data:  tdiff$T1 and tdiff$T3
+t = 125.21, df = 28319, p-value < 2.2e-16
+alternative hypothesis: true mean difference is not equal to 0
+95 percent confidence interval:
+ 0.4424417 0.4565138
+sample estimates:
+mean difference 
+      0.4494778 
+
+[1] "UNHEATED vs. CONTROL LEAF (T2 vs T3)"
+
+	Paired t-test
+
+data:  tdiff$T2 and tdiff$T3
+t = -74.356, df = 28319, p-value < 2.2e-16
+alternative hypothesis: true mean difference is not equal to 0
+95 percent confidence interval:
+ -0.2905223 -0.2755992
+sample estimates:
+mean difference 
+     -0.2830607 
+
+[1] "HEATED vs. UNHEATED LEAF (T1 vs T2)"
+
+	Paired t-test
+
+data:  tdiff$T1 and tdiff$T2
+t = 243.12, df = 28319, p-value < 2.2e-16
+alternative hypothesis: true mean difference is not equal to 0
+95 percent confidence interval:
+ 0.7266328 0.7384442
+sample estimates:
+mean difference 
+      0.7325385 
+
+[1] "======================================================"
+[1] "======================================================"
+[1] "Experiment: 3-2"
+[1] "HEATED LEAF (T1):  mean: 31.5 sd: 3.2"
+[1] "UNHEATED LEAF (T2):  mean: 29.4 sd: 3.4"
+[1] "CONTROL LEAF (T3):  mean: 28.2 sd: 2.9"
+[1] "======================================================"
+[1] "ANOVA Heated vs. Unheated"
+[1] "======================================================"
+[1] "Experiment: 3-2"
+[1] "paired t-test"
+[1] "HEATED vs. CONTROL LEAF (T1 vs T3)"
+
+	Paired t-test
+
+data:  tdiff$T1 and tdiff$T3
+t = 281.36, df = 7964, p-value < 2.2e-16
+alternative hypothesis: true mean difference is not equal to 0
+95 percent confidence interval:
+ 3.310594 3.357047
+sample estimates:
+mean difference 
+        3.33382 
+
+[1] "UNHEATED vs. CONTROL LEAF (T2 vs T3)"
+
+	Paired t-test
+
+data:  tdiff$T2 and tdiff$T3
+t = 99.29, df = 7964, p-value < 2.2e-16
+alternative hypothesis: true mean difference is not equal to 0
+95 percent confidence interval:
+ 1.209983 1.258722
+sample estimates:
+mean difference 
+       1.234353 
+
+[1] "HEATED vs. UNHEATED LEAF (T1 vs T2)"
+
+	Paired t-test
+
+data:  tdiff$T1 and tdiff$T2
+t = 139.04, df = 7964, p-value < 2.2e-16
+alternative hypothesis: true mean difference is not equal to 0
+95 percent confidence interval:
+ 2.069868 2.129067
+sample estimates:
+mean difference 
+       2.099468 
+
+[1] "======================================================"

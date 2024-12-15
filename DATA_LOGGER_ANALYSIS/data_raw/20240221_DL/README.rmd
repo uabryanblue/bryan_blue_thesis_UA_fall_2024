@@ -1,0 +1,3 @@
+# DL2 data logger stopped working
+
+The DL2 data logger started to stop on this week. DL1 data was okay and there was no data loss.

@@ -1,0 +1,1022 @@
+---
+title: "Experiment Sensor Visualization"
+author: "Bryan Blue"
+date: "Last Generated: `r Sys.Date()`"
+
+execute:
+  echo: false
+format: 
+  html:
+    code-fold: true
+    fig-width: 8
+    fig-height: 6
+  pdf:
+    fig-width: 8
+    fig-height: 6
+---
+
+```{r init}
+#| echo: false
+#| warning: false
+#| include: false
+
+# https://www.regextester.com/ for regex checking
+
+# advanced conflict resolution
+# https://conflicted.r-lib.org/
+# install.packages("devtools")
+library(conflicted)
+
+library(here)
+conflicts_prefer(here::here)
+
+library(readr)
+library(purrr)
+library(dplyr)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::arrange)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::summarize)
+conflicts_prefer(dplyr::mutate)
+
+library(lubridate)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(patchwork)
+
+source("DL_experiment_logs_functions.R")
+
+# constants to data paths
+DATARAW <- "data_raw" # TREAT READ ONLY. Raw LICOR data logs.
+DATACLEAN <- "data_clean" # files generated from data_raw through data wrangling
+DATAUSER <- "data_user" # data the user manually enters or manipulates
+FIGSTORAGE <- "figures" # the relative path to store ggplots
+LEVEL <- 2
+
+here()
+```
+
+**The experiment started on November 22, 2023.**
+
+## Load Data Logger Data
+
+**01_wrangle_DL_logs.qmd needs run before this script.**\
+This generates the files in `r DATACLEAN` which are already filtered and calibrated.
+
+### Hardware Inventory
+
+Use MAC address to reference the function of the microprocessor. It appears in logs and should be considered the primary key to the data.
+
+| ID  | DATE      | DEVICE             | FUNCTION               | MAC          | DESCRIPTION      | Level |
+|-----------|-----------|-----------|-----------|-----------|-----------|-----------|
+| M01 | 9/24/2023 | ESP8266 NodeMCU V2 | Data Logger            | 485519DF2986 | DL1 - TIMESERVER | 1     |
+| M02 | 9/24/2023 | ESP8266 NodeMCU V2 | Data Logger            | 8CAAB54D7F18 | DL2              | 1     |
+| M12 | 9/25/2023 | ESP8266 NodeMCU V2 | Climate Sensor         | 48E72952E8D2 | THP4             | 1     |
+| M10 | 9/25/2023 | ESP8266 NodeMCU V2 | Warming Device Control | 48E7295348F8 | TRC              | 1     |
+| M05 | 9/25/2033 | ESP8266 NodeMCU V2 | Climate Sensor         | 48E72953672E | THP2             | 2     |
+| M08 | 9/25/2023 | ESP8266 NodeMCU V2 | Warming Device Control | 48E7295552AD | TRC              | 2     |
+| M04 | 9/25/2023 | ESP8266 NodeMCU V2 | Climate Sensor         | 485519DF2848 | THP3             | 3     |
+| M09 | 9/24/2023 | ESP8266 NodeMCU V2 | Warming Device Control | 48E729537E2C | TRC              | 3     |
+
+: Hardware Inventory - see "device_mapping.csv" in the folder `r DATACLEAN` for the latest values.
+
+### TC Information
+
+Each 735nm TRC module has support for five thermocouples (TC). Each port is numbered 1 through 5.\
+They represent:
+
+| TC1       | TC2     | TC3       | TC4  | TC5      |
+|-----------|---------|-----------|------|----------|
+| Treatment | Control | Reference | Heat | Non-Heat |
+
+: 735nm Thermocouple Designations - each TC has a unique name and two point calibration applied to it. These are grouped into five, based on the values in the 735nm TRC configuration. See "conf.py" in the "735nm_TRC" code for the latest groupings.
+
+```{r load_cleaned_logs}
+#| echo: false
+#| warning: false
+
+# 01_wrangle_DL_logs.qmd MUST be run before this will work
+# run it any time new data is added
+
+# At this point all data has been wrangled and cleaned
+climate_data <- read_clean_climate_data(here(DATACLEAN, "cleaned_climate_data.csv"))
+climate_hour_data <- read_climate_hour_data(here(DATACLEAN, "climate_hour_stats.csv"))
+
+TRC_data <- read_clean_TRC_data(here(DATACLEAN, "cleaned_TRC_data.csv"))
+calibrate_TRC_data <- read_TC_calibration_data(here(DATACLEAN, "calibrated_TRC_data.csv"))
+TRC_hour_stats <- read_TC_hour_data(here(DATACLEAN, "TRC_hour_stats.csv"))
+
+# MAC address of esp8266 to function
+MACmap <- read_device_mapping_data(here(DATARAW, "device_mapping.csv"))
+
+LEVEL <- 2
+# get TRC MAC for the device on level 2
+pmac <- MACmap %>%
+  filter(level == LEVEL &
+           role == "Warming Device Control") %>%
+  select(MAC)
+pmac <- as.character(pmac$MAC)
+
+# store off the role, warming device name and level
+# can be used in plots, etc.
+p_meta_datadata <- MACmap %>% 
+  filter(MAC == pmac) %>% 
+  select(role, name, level)
+
+# time of entire experiment data
+expbegin <- "2023-11-17 00:00:00"
+expend <- "2023-05-08 00:00:00"
+
+```
+
+```{r plot_functions}
+#| echo: false
+#| warning: false
+
+plot_MAC_date_range <- function(df, plotvar, plcolor, title = "") {
+  
+  plotT <- ggplot() +
+    # geom_point(data = final_data, 
+    geom_line(data = df, 
+              aes(x = DL_datetime, y = .data[[plotvar]], color = plotvar), 
+              size = 1) +
+    ggtitle(title) +
+    xlab("Day of Month") +
+    ylab(plotvar) +
+    # scale_color_manual(name='MAC',
+    #                    breaks=c('Treatment', 'Control', 'Reference'),
+    #                    values=c('Treatment'='#F8766D', 'Control'='#619CFF', 'Reference'='#00BA38'))+
+    # scale_y_continuous(limits=c(0.0, 0.2), breaks=c(0, 0.1, 0.2, 0.5))   +
+    scale_x_datetime(date_labels = ("%d"),
+                     date_breaks = "days", 
+                     expand = expansion(0)) +
+    theme(axis.text.x=element_text(angle = 60, hjust = 1))
+  
+  return(plotT)
+}
+
+```
+
+
+# Experimental Warming Device
+
+## Level 2 experiment ran from 2023-11-17 to 2024-05-08
+Data from the warming device's five thermocouples placed on:  
+Heated (T1) and Unheated (T2) leaf treatments, the Control (T3), and the Heated (T4) and Unheated (T5) Pad  
+
+## Level 2 Installation
+
+This plant is located approximately 7 m above the tropical rain forest floor. It grows on the South side of the mountain on a terrace.\
+
+# Leaf Warming All Data
+
+Plots and information on all of the thermocouples.
+
+The software has a safety cutoff of 50 C for the heated pad which looks to have been reached.
+
+The lower and upper hinges correspond to the first and third quartiles (the 25th and 75th percentiles). This differs slightly from the method used by the boxplot() function, and may be apparent with small samples.   
+
+The upper whisker extends from the hinge to the largest value no further than 1.5 * IQR from the hinge (where IQR is the inter-quartile range, or distance between the first and third quartiles). The lower whisker extends from the hinge to the smallest value at most 1.5 * IQR of the hinge. Data beyond the end of the whiskers are called "outlying" points and are plotted individually.  
+
+```{r boxplot_all_TC}
+#| echo: false
+#| warning: false
+
+TC_boxplot <- function(TRC_data, LEVEL, d.begin, d.end, title) {
+
+if (LEVEL == 1) { 
+  Plevel <- LEVEL
+  LEVEL <- 3
+}  
+  
+# change LEVEL to see plots of other TRC devices
+pmac <- MACmap %>% 
+  filter(level == LEVEL & role == "Warming Device Control") %>%
+  select(MAC)
+pmac <- as.character(pmac$MAC)
+
+
+pdata <- MACmap %>% 
+  filter(MAC == pmac) %>% 
+  select(role, name, level)
+
+TCdata <- TRC_data %>% 
+  filter(DL_datetime >= as.POSIXct(d.begin) & 
+           DL_datetime <= as.POSIXct(d.end) &
+           sensor_MAC == pmac) 
+
+# the TC names need to be in one row for this plot
+long <- TCdata %>% 
+  pivot_longer(
+    cols = starts_with("T") , 
+    names_to = "Thermocouple",
+    # values_to = "value"
+  )
+
+title_begin <- format.Date(d.begin, "%D")
+title_end <- format.Date(d.end, "%D")
+# title1 <- paste("Thermocouple Values for Level", pdata$level, sep = " ")
+# Ttitle <- paste(title1, "\n", title_begin, "-", title_end, sep = " ")
+
+Ttitle <- title
+
+p <- ggplot(data = long, 
+               aes(x = Thermocouple , y = value, color = Thermocouple)) +
+  geom_boxplot(staplewidth = 1,
+               outlier.color = "black", outlier.size = 0.75) +
+  scale_colour_manual(
+    values = c('#F8766D', '#619CFF', '#00BA38', 'red', 'blue'),
+    breaks=c('T1.mean', 'T2.mean', 'T3.mean', 'T4.mean', 'T5.mean'),
+    labels = c('Heated (T1)', 'Unheated (T2)', "Control (T3)", "Heated Pad (T4)", "Non-Heated Pad (T5)"))+
+  # scale_y_continuous(limits=c(20.0, 50.0), breaks=c(20, 30, 40, 50)) +
+  coord_cartesian(ylim = c(15.0, 55.0)) +
+  theme_bw() +
+  ggtitle(Ttitle) +
+  xlab("Thermocouple") +
+  ylab("Temperature (C)")
+
+  return(p)
+
+}
+
+```
+### Boxplot All Hourly Averages 2
+```{r exp2bp}
+
+LEVEL <- 2
+d.begin <- "2023-11-17 00:00:00"
+d.end <-"2024-05-08 00:00:00"
+title_begin <- format.Date(d.begin, "%D")
+title_end <- format.Date(d.end, "%D")
+exp2_tc_bp <- TC_boxplot(TRC_hour_stats, LEVEL, d.begin, d.end, "Experiment 2 Thermocouple Temperatures")
+
+
+plot_name <- paste("exp2_TC_boxplot", LEVEL, "_", substr(d.begin, 1, 10), "-", substr(d.end, 1, 10), ".tif", sep = '')
+ggsave(here(FIGSTORAGE, plot_name), 
+       device = "tiff",
+       plot = last_plot(),
+       width = 8, 
+       height = 6)
+
+exp2_tc_bp
+
+
+```
+### Boxplot All Hourly Averages 3-1
+```{r exp31bp}
+
+# REGVAR <- FALSE
+
+# The first installation was encoded as the value one.
+LEVEL <- 1
+# get TRC MAC for the device on level 2
+pmac <- MACmap %>%
+  filter(level == LEVEL &
+           role == "Warming Device Control") %>%
+  select(MAC)
+pmac <- as.character(pmac$MAC)
+
+# # store off the role, warming device name and level
+# # can be used in plots, etc.
+# p_meta_datadata <- MACmap %>% 
+#   filter(MAC == pmac) %>% 
+#   select(role, name, level)
+
+
+
+# pmac already defined for level 2 TRC device
+TRCmac <- pmac
+# print(pmac)
+
+# level 3, 1st install
+d.begin <- "2023-11-29 00:00:00"
+d.end <- "2024-03-20 00:00:00"
+
+
+
+
+# LEVEL <- 1
+# d.begin <- "2023-11-17 00:00:00"
+# d.end <-"2024-05-08 00:00:00"
+title_begin <- format.Date(d.begin, "%D")
+title_end <- format.Date(d.end, "%D")
+exp31_tc_bp <- TC_boxplot(TRC_hour_stats, LEVEL, d.begin, d.end, "Experiment 3-1 Thermocouple Temperatures")
+
+
+plot_name <- paste("exp31_TC_boxplot", LEVEL, "_", substr(d.begin, 1, 10), "-", substr(d.end, 1, 10), ".tif", sep = '')
+ggsave(here(FIGSTORAGE, plot_name), 
+       device = "tiff",
+       plot = last_plot(),
+       width = 8, 
+       height = 6)
+
+exp31_tc_bp
+
+
+```
+### Boxplot All Hourly Averages 3-2
+```{r exp32bp}
+
+# REGVAR <- FALSE
+
+# The first installation was encoded as the value one.
+LEVEL <- 3
+# get TRC MAC for the device on level 2
+pmac <- MACmap %>%
+  filter(level == LEVEL &
+           role == "Warming Device Control") %>%
+  select(MAC)
+pmac <- as.character(pmac$MAC)
+
+# # store off the role, warming device name and level
+# # can be used in plots, etc.
+# p_meta_datadata <- MACmap %>% 
+#   filter(MAC == pmac) %>% 
+#   select(role, name, level)
+
+
+
+# pmac already defined for level 2 TRC device
+TRCmac <- pmac
+# print(pmac)
+
+# level 3, 2nd install
+d.begin <- "2024-04-03 00:00:00"
+d.end <- "2024-05-08 00:00:00"
+
+
+
+
+# LEVEL <- 1
+# d.begin <- "2023-11-17 00:00:00"
+# d.end <-"2024-05-08 00:00:00"
+title_begin <- format.Date(d.begin, "%D")
+title_end <- format.Date(d.end, "%D")
+exp32_tc_bp <- TC_boxplot(TRC_hour_stats, LEVEL, d.begin, d.end, "Experiment 3-2 Thermocouple Temperatures")
+
+
+plot_name <- paste("exp32_TC_boxplot", LEVEL, "_", substr(d.begin, 1, 10), "-", substr(d.end, 1, 10), ".tif", sep = '')
+ggsave(here(FIGSTORAGE, plot_name), 
+       device = "tiff",
+       plot = last_plot(),
+       width = 8, 
+       height = 6)
+
+exp32_tc_bp
+
+(exp2_tc_bp + exp31_tc_bp) / (exp32_tc_bp + plot_spacer())  + plot_layout(guides = 'collect')
+
+exp2_tc_bp / exp31_tc_bp / exp32_tc_bp  
+
+  exp2_tc_bp + exp31_tc_bp + exp32_tc_bp + plot_layout(ncol = 2) + plot_layout(guides = 'collect')
+
+```
+```{r TRC_statistics_plot}
+
+
+plot_TRC_delta_clean <- function(averaged_stats, pmac, d.begin, d.end, xvar, yvar, title) {
+  
+   plotdiff <- ggplot(data = averaged_stats, 
+                     aes(x = averaged_stats[[xvar]], y = averaged_stats[[yvar]])) +
+    
+    geom_point(size = 0.2) +
+    # geom_smooth(formula = "4.809 + 0.9406 * averaged_stats[[yvar]]", se = TRUE, color = "blue") +
+    # geom_smooth(se = TRUE) +
+    geom_smooth(method='lm') +
+    stat_regline_equation(
+      aes(label = paste(..eq.label.., ..adj.rr.label.., sep = "~~~~"))) + #,
+    # formula = formula
+    # ) +
+    
+    ggtitle(title) +
+    xlab("(C)") +
+    ylab("(C)") +
+    # scale_color_manual(name='',
+    #                    breaks=c('vs', 'RH Mean', 'T Mean', "Delta Mean"),
+    #                    values=c('RH Mean'='#619CFF', 'T Mean'='#F8766D', "Delta Mean"='#00BA38', 'vs'='darkorange')) +
+    # scale_x_datetime(date_breaks = "1 week",
+    #                  date_minor_breaks = "1 day",
+    #                  date_labels = "%b %d") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1)) #+
+  # coord_cartesian(ylim=c(22,40))
+  
+  return(plotdiff)
+}
+
+# plot_TRC_delta_clean(no_outliers, TRCmac, d.begin, d.end, "T3.mean", "T1.mean", "Heated vs Control")
+
+
+```
+
+
+```{r all_data_histograms_2}
+
+#| echo: false
+#| warning: false
+
+REGVAR <- FALSE
+
+LEVEL <- 2
+
+# pmac already defined for level 2 TRC device
+TRCmac <- pmac
+# print(pmac)
+
+d.begin <- "2023-11-17 00:00:00"
+d.end <- "2024-05-08 00:00:00"
+
+
+HC_averaged_stats <- TRC_hour_stats %>% 
+  filter(DL_datetime >= as.POSIXct(d.begin) & 
+           DL_datetime <= as.POSIXct(d.end) &
+           sensor_MAC == TRCmac) 
+
+# is it linear relationship?
+scatter.smooth(HC_averaged_stats$T1.mean, HC_averaged_stats$T3.mean, main='Heated mean vs Control mean\nRaw Hourly Averaged Data')
+
+# normal variables?
+
+hist(HC_averaged_stats$T1.mean, col = "steelblue")
+hist(HC_averaged_stats$T3.mean, col = "steelblue")
+# FOR A PAIRED T-TEST, THE DIFFERENCE MUST BE NORMAL
+# is the data normal p < .05 => not normal
+# this does NOT work on large data sets
+differences <- with(HC_averaged_stats, T1.mean - T3.mean)
+# shapiro.test(differences)
+hist(differences, col = "steelblue")
+
+# outliers?
+# boxplot(HC_averaged_stats$T3.mean, HC_averaged_stats$T1.mean)
+title <- paste('Experiment 2 Mean Hourly Thermocouple Values', LEVEL, sep= '')
+p <- TC_boxplot(HC_averaged_stats, LEVEL, d.begin, d.end, title)
+plot_name <- paste("TC_boxplot_lvl", LEVEL, "_", substr(d.begin, 1, 10), "-", substr(d.end, 1, 10), "_hour_avg.jpg", sep = '')
+ggsave(here(FIGSTORAGE, plot_name), plot = last_plot(), width = 8, height = 6)
+p
+
+# Paired Samples t-test: Assumptions
+# 
+# For the results of a paired samples t-test to be valid, the following assumptions should be met:
+# 
+#     The participants should be selected randomly from the population.
+#     The differences between the pairs should be approximately normally distributed.
+#     There should be no extreme outliers in the differences.
+
+
+# FINAL STATS TO REPORT
+# A paired samples t-test is a statistical test that compares the means of 
+# two samples when each observation in one sample can be paired with an 
+# observation in the other sample.
+# 
+# μd is the mean difference.
+# H0: μd = 0 
+# 
+# Ha: μd ≠ 0 (two-tailed)
+# Ha: μd > 0 (one-tailed)
+# Ha: μd < 0 (one-tailed)
+mean(HC_averaged_stats$T1.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T1.mean, na.rm = TRUE)
+mean(HC_averaged_stats$T3.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T3.mean, na.rm = TRUE)
+
+t.test(HC_averaged_stats$T1.mean, HC_averaged_stats$T3.mean,
+       data = HC_averaged_stats,
+       alternative = "two.sided",
+       paired = TRUE)
+
+
+# UNHEATED VS CONTROL
+mean(HC_averaged_stats$T2.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T2.mean, na.rm = TRUE)
+mean(HC_averaged_stats$T3.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T3.mean, na.rm = TRUE)
+
+t.test(HC_averaged_stats$T2.mean, HC_averaged_stats$T3.mean,
+       data = HC_averaged_stats,
+       alternative = "two.sided",
+       paired = TRUE)
+
+
+# HEATED VS UNHEATED
+# mean(HC_averaged_stats$T1.mean, na.rm = TRUE)
+# sd(HC_averaged_stats$T1.mean, na.rm = TRUE)
+# mean(HC_averaged_stats$T2.mean, na.rm = TRUE)
+# sd(HC_averaged_stats$T2.mean, na.rm = TRUE)
+
+t.test(HC_averaged_stats$T1.mean, HC_averaged_stats$T2.mean,
+       data = HC_averaged_stats,
+       alternative = "two.sided",
+       paired = TRUE)
+
+if (REGVAR == TRUE) {
+# !!!! SIMPLE LINEAR REGRESSION
+# heated ~ control TC
+fit <- lm(T1.mean ~ T3.mean, data = HC_averaged_stats)
+summary(fit)
+
+# CHECK RESIDUALS UTLIERS REMOVED
+#define residuals
+res <- resid(fit)
+
+#produce residual vs. fitted plot
+plot(fitted(fit), res)
+#add a horizontal line at 0 
+abline(0,0)
+
+# NORMAL???
+#create Q-Q plot for residuals
+qqnorm(res)
+#add a straight diagonal line to the plot
+qqline(res) 
+
+#Create density plot of residuals
+plot(density(res))
+hist(residuals(fit), col = "steelblue")
+
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "deltaunheatcont.mean", "Unheated - Control (delta)")
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "T1.mean", "T1.mean")
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "T3.mean", "T3.mean")
+plot_TRC_delta_clean(HC_averaged_stats, TRCmac, d.begin, d.end, "T3.mean", "T1.mean", "Heated vs Control")
+
+#define new data frame of values to predict
+# newdata = data.frame(T3.mean=c(15, 20, 25, 30, 35, 40, 45))
+#use model to predict points for all three players
+# newdata$t3pred <- predict(fit, no_outliers)
+# newdata$t3diff <- newdata$t3pred - newdata$T3.mean
+# mean(newdata$t3diff)
+
+}
+
+mean(HC_averaged_stats$T1.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T1.mean, na.rm = TRUE)
+mean(HC_averaged_stats$T2.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T2.mean, na.rm = TRUE)
+mean(HC_averaged_stats$T3.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T3.mean, na.rm = TRUE)
+
+```
+
+```{r all_data_histograms_lvl3_1}
+
+#| echo: false
+#| warning: false
+
+REGVAR <- FALSE
+
+# The first installation was encoded as the value one.
+LEVEL <- 3
+# get TRC MAC for the device on level 2
+pmac <- MACmap %>%
+  filter(level == LEVEL &
+           role == "Warming Device Control") %>%
+  select(MAC)
+pmac <- as.character(pmac$MAC)
+
+# store off the role, warming device name and level
+# can be used in plots, etc.
+p_meta_datadata <- MACmap %>% 
+  filter(MAC == pmac) %>% 
+  select(role, name, level)
+
+
+
+# pmac already defined for level 2 TRC device
+TRCmac <- pmac
+# print(pmac)
+
+# level 3, 1st install
+d.begin <- "2023-11-29 00:00:00"
+d.end <- "2024-03-20 00:00:00"
+# # level 3, 2nd install
+# d.begin <- "2024-04-03 00:00:00"
+# d.end <- "2024-05-08 00:00:00"
+
+
+HC_averaged_stats <- TRC_hour_stats %>% 
+  filter(DL_datetime >= as.POSIXct(d.begin) & 
+           DL_datetime <= as.POSIXct(d.end) &
+           sensor_MAC == TRCmac) 
+
+# is it linear relationship?
+scatter.smooth(HC_averaged_stats$T1.mean, HC_averaged_stats$T3.mean, main='Heated mean vs Control mean\nRaw Hourly Averaged Data')
+
+# normal variables?
+
+hist(HC_averaged_stats$T1.mean, col = "steelblue")
+hist(HC_averaged_stats$T3.mean, col = "steelblue")
+# FOR A PAIRED T-TEST, THE DIFFERENCE MUST BE NORMAL
+# is the data normal p < .05 => not normal
+# this does NOT work on large data sets
+differences <- with(HC_averaged_stats, T1.mean - T3.mean)
+# shapiro.test(differences)
+hist(differences, col = "steelblue")
+
+# outliers?
+# boxplot(HC_averaged_stats$T3.mean, HC_averaged_stats$T1.mean)
+title <- paste('Mean Hourly Thermocouple Values\n Level ', LEVEL, ", First Installation", sep= '')
+p <- TC_boxplot(HC_averaged_stats, LEVEL, d.begin, d.end, title)
+plot_name <- paste("TC_boxplot_lvl", LEVEL, "_", substr(d.begin, 1, 10), "-", substr(d.end, 1, 10), "_hour_avg.jpg", sep = '')
+ggsave(here(FIGSTORAGE, plot_name), plot = last_plot(), width = 8, height = 6)
+p
+
+# Paired Samples t-test: Assumptions
+# 
+# For the results of a paired samples t-test to be valid, the following assumptions should be met:
+# 
+#     The participants should be selected randomly from the population.
+#     The differences between the pairs should be approximately normally distributed.
+#     There should be no extreme outliers in the differences.
+
+
+# FINAL STATS TO REPORT
+# A paired samples t-test is a statistical test that compares the means of 
+# two samples when each observation in one sample can be paired with an 
+# observation in the other sample.
+# 
+# μd is the mean difference.
+# H0: μd = 0 
+# 
+# Ha: μd ≠ 0 (two-tailed)
+# Ha: μd > 0 (one-tailed)
+# Ha: μd < 0 (one-tailed)
+mean(HC_averaged_stats$T1.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T1.mean, na.rm = TRUE)
+mean(HC_averaged_stats$T3.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T3.mean, na.rm = TRUE)
+
+t.test(HC_averaged_stats$T1.mean, HC_averaged_stats$T3.mean,
+       data = HC_averaged_stats,
+       alternative = "two.sided",
+       paired = TRUE)
+
+
+# UNHEATED VS CONTROL
+mean(HC_averaged_stats$T2.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T2.mean, na.rm = TRUE)
+mean(HC_averaged_stats$T3.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T3.mean, na.rm = TRUE)
+
+t.test(HC_averaged_stats$T2.mean, HC_averaged_stats$T3.mean,
+       data = HC_averaged_stats,
+       alternative = "two.sided",
+       paired = TRUE)
+
+# HEATED VS UNHEATED
+mean(HC_averaged_stats$T1.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T1.mean, na.rm = TRUE)
+mean(HC_averaged_stats$T2.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T2.mean, na.rm = TRUE)
+
+t.test(HC_averaged_stats$T1.mean, HC_averaged_stats$T2.mean,
+       data = HC_averaged_stats,
+       alternative = "two.sided",
+       paired = TRUE)
+
+
+
+if (REGVAR == TRUE) {
+# !!!! SIMPLE LINEAR REGRESSION
+# heated ~ control TC
+fit <- lm(T1.mean ~ T3.mean, data = HC_averaged_stats)
+summary(fit)
+
+# CHECK RESIDUALS UTLIERS REMOVED
+#define residuals
+res <- resid(fit)
+
+#produce residual vs. fitted plot
+plot(fitted(fit), res)
+#add a horizontal line at 0 
+abline(0,0)
+
+# NORMAL???
+#create Q-Q plot for residuals
+qqnorm(res)
+#add a straight diagonal line to the plot
+qqline(res) 
+
+#Create density plot of residuals
+plot(density(res))
+hist(residuals(fit), col = "steelblue")
+
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "deltaunheatcont.mean", "Unheated - Control (delta)")
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "T1.mean", "T1.mean")
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "T3.mean", "T3.mean")
+plot_TRC_delta_clean(HC_averaged_stats, TRCmac, d.begin, d.end, "T3.mean", "T1.mean", "Heated vs Control")
+
+#define new data frame of values to predict
+# newdata = data.frame(T3.mean=c(15, 20, 25, 30, 35, 40, 45))
+#use model to predict points for all three players
+# newdata$t3pred <- predict(fit, no_outliers)
+# newdata$t3diff <- newdata$t3pred - newdata$T3.mean
+# mean(newdata$t3diff)
+
+}
+mean(HC_averaged_stats$T1.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T1.mean, na.rm = TRUE)
+mean(HC_averaged_stats$T2.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T2.mean, na.rm = TRUE)
+mean(HC_averaged_stats$T3.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T3.mean, na.rm = TRUE)
+
+```
+
+
+```{r all_data_histograms_lvl3_2}
+
+#| echo: false
+#| warning: false
+
+REGVAR <- FALSE
+
+# The first installation was encoded as the value one.
+LEVEL <- 3
+# get TRC MAC for the device on level 2
+pmac <- MACmap %>%
+  filter(level == LEVEL &
+           role == "Warming Device Control") %>%
+  select(MAC)
+pmac <- as.character(pmac$MAC)
+
+# store off the role, warming device name and level
+# can be used in plots, etc.
+p_meta_datadata <- MACmap %>% 
+  filter(MAC == pmac) %>% 
+  select(role, name, level)
+
+
+
+# pmac already defined for level 2 TRC device
+TRCmac <- pmac
+# print(pmac)
+
+# level 3, 1st install
+# d.begin <- "2023-11-29 00:00:00"
+# d.end <- "2024-03-20 00:00:00"
+# level 3, 2nd install
+d.begin <- "2024-04-03 00:00:00"
+d.end <- "2024-05-08 00:00:00"
+
+
+HC_averaged_stats <- TRC_hour_stats %>% 
+  filter(DL_datetime >= as.POSIXct(d.begin) & 
+           DL_datetime <= as.POSIXct(d.end) &
+           sensor_MAC == TRCmac) 
+
+# is it linear relationship?
+scatter.smooth(HC_averaged_stats$T1.mean, HC_averaged_stats$T3.mean, main='Heated mean vs Control mean\nRaw Hourly Averaged Data')
+
+# normal variables?
+
+hist(HC_averaged_stats$T1.mean, col = "steelblue")
+hist(HC_averaged_stats$T3.mean, col = "steelblue")
+# FOR A PAIRED T-TEST, THE DIFFERENCE MUST BE NORMAL
+# is the data normal p < .05 => not normal
+# this does NOT work on large data sets
+differences <- with(HC_averaged_stats, T1.mean - T3.mean)
+# shapiro.test(differences)
+hist(differences, col = "steelblue")
+
+# outliers?
+# boxplot(HC_averaged_stats$T3.mean, HC_averaged_stats$T1.mean)
+title <- paste('Mean Hourly Thermocouple Values\n Level ', LEVEL, ", 2nd Installation", sep= '')
+p <- TC_boxplot(HC_averaged_stats, LEVEL, d.begin, d.end, title)
+plot_name <- paste("TC_boxplot_lvl", LEVEL, "_", substr(d.begin, 1, 10), "-", substr(d.end, 1, 10), "_hour_avg.jpg", sep = '')
+ggsave(here(FIGSTORAGE, plot_name), plot = last_plot(), width = 8, height = 6)
+p
+
+# Paired Samples t-test: Assumptions
+# 
+# For the results of a paired samples t-test to be valid, the following assumptions should be met:
+# 
+#     The participants should be selected randomly from the population.
+#     The differences between the pairs should be approximately normally distributed.
+#     There should be no extreme outliers in the differences.
+
+
+# FINAL STATS TO REPORT
+# A paired samples t-test is a statistical test that compares the means of 
+# two samples when each observation in one sample can be paired with an 
+# observation in the other sample.
+# 
+# μd is the mean difference.
+# H0: μd = 0 
+# 
+# Ha: μd ≠ 0 (two-tailed)
+# Ha: μd > 0 (one-tailed)
+# Ha: μd < 0 (one-tailed)
+mean(HC_averaged_stats$T1.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T1.mean, na.rm = TRUE)
+mean(HC_averaged_stats$T3.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T3.mean, na.rm = TRUE)
+
+t.test(HC_averaged_stats$T1.mean, HC_averaged_stats$T3.mean,
+       data = HC_averaged_stats,
+       alternative = "two.sided",
+       paired = TRUE)
+
+
+
+# UNHEATED VS CONTROL
+mean(HC_averaged_stats$T2.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T2.mean, na.rm = TRUE)
+mean(HC_averaged_stats$T3.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T3.mean, na.rm = TRUE)
+
+t.test(HC_averaged_stats$T2.mean, HC_averaged_stats$T3.mean,
+       data = HC_averaged_stats,
+       alternative = "two.sided",
+       paired = TRUE)
+
+# HEATED VS UNHEATED
+mean(HC_averaged_stats$T1.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T1.mean, na.rm = TRUE)
+mean(HC_averaged_stats$T2.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T2.mean, na.rm = TRUE)
+
+t.test(HC_averaged_stats$T1.mean, HC_averaged_stats$T2.mean,
+       data = HC_averaged_stats,
+       alternative = "two.sided",
+       paired = TRUE)
+
+if (REGVAR == TRUE) {
+# !!!! SIMPLE LINEAR REGRESSION
+# heated ~ control TC
+fit <- lm(T1.mean ~ T3.mean, data = HC_averaged_stats)
+summary(fit)
+
+# CHECK RESIDUALS UTLIERS REMOVED
+#define residuals
+res <- resid(fit)
+
+#produce residual vs. fitted plot
+plot(fitted(fit), res)
+#add a horizontal line at 0 
+abline(0,0)
+
+# NORMAL???
+#create Q-Q plot for residuals
+qqnorm(res)
+#add a straight diagonal line to the plot
+qqline(res) 
+
+#Create density plot of residuals
+plot(density(res))
+hist(residuals(fit), col = "steelblue")
+
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "deltaunheatcont.mean", "Unheated - Control (delta)")
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "T1.mean", "T1.mean")
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "T3.mean", "T3.mean")
+plot_TRC_delta_clean(HC_averaged_stats, TRCmac, d.begin, d.end, "T3.mean", "T1.mean", "Heated vs Control")
+
+#define new data frame of values to predict
+# newdata = data.frame(T3.mean=c(15, 20, 25, 30, 35, 40, 45))
+#use model to predict points for all three players
+# newdata$t3pred <- predict(fit, no_outliers)
+# newdata$t3diff <- newdata$t3pred - newdata$T3.mean
+# mean(newdata$t3diff)
+
+}
+
+mean(HC_averaged_stats$T1.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T1.mean, na.rm = TRUE)
+mean(HC_averaged_stats$T2.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T2.mean, na.rm = TRUE)
+mean(HC_averaged_stats$T3.mean, na.rm = TRUE)
+sd(HC_averaged_stats$T3.mean, na.rm = TRUE)
+
+
+```
+
+
+
+
+
+```{r no_outliers}
+
+LEVEL <- 2
+
+# pmac already defined for level 2 TRC device
+TRCmac <- pmac
+# print(pmac)
+
+d.begin <- "2023-11-17 00:00:00"
+d.end <- "2024-05-08 00:00:00"
+
+
+HC_averaged_stats <- TRC_hour_stats %>% 
+  filter(DL_datetime >= as.POSIXct(d.begin) & 
+           DL_datetime <= as.POSIXct(d.end) &
+           sensor_MAC == TRCmac) 
+
+
+
+# !!!!!!!!!!!  OUTLIERS MAY BE SIGNIFICANT, TEST WITH AND WITHOUT OUTLIERS 
+
+# OUTLIERS found in T1, fix using Interquartile range
+#find Q1, Q3, and interquartile range for values in column A
+Q1 <- quantile(HC_averaged_stats$T1.mean, .25, na.rm = TRUE)
+Q3 <- quantile(HC_averaged_stats$T1.mean, .75, na.rm = TRUE)
+IQR <- IQR(HC_averaged_stats$T1.mean, na.rm = TRUE)
+
+#only keep rows in dataframe that have values within 1.5*IQR of Q1 and Q3
+no_outliers <- subset(HC_averaged_stats, HC_averaged_stats$T1.mean> (Q1 - 1.5*IQR) &
+                        HC_averaged_stats$T1.mean< (Q3 + 1.5*IQR))
+
+# outliers?
+# boxplot(HC_averaged_stats$T3.mean, HC_averaged_stats$T1.mean)
+title <- "Heated vs Control Hourly Averages with Ouliers Removed"
+p <- TC_boxplot(no_outliers, LEVEL, d.begin, d.end, title)
+plot_name <- paste("TC_boxplot_lvl", LEVEL, "_", substr(d.begin, 1, 10), "-", substr(d.end, 1, 10), "_hour_avg_no_outliers.jpg", sep = '')
+ggsave(here(FIGSTORAGE, plot_name), plot = last_plot(), width = 8, height = 6)
+p
+
+# no_outliers$T1.mean <- log(no_outliers$T1.mean)
+# no_outliers$T3.mean <- log(no_outliers$T3.mean)
+
+# is it linear relationship?
+scatter.smooth(no_outliers$T1.mean, no_outliers$T3.mean, main='Unheated mean vs Control mean\n No Outliers')
+
+hist(no_outliers$T1.mean, col = "steelblue")
+hist(no_outliers$T3.mean, col = "steelblue")
+# outliers?
+boxplot(no_outliers$T3.mean, no_outliers$T1.mean)
+# is the data normal p < .05 => not normal
+differences <- with(no_outliers, T1.mean - T3.mean)
+# differences <- with(data, score[group == "post"] - score[group == "pre"])
+shapiro.test(differences)
+hist(differences, col = "steelblue")
+
+#perform shapiro-wilk test
+shapiro.test(no_outliers$T1.mean)
+shapiro.test(no_outliers$T3.mean)
+
+
+# heated ~ control TC
+fit <- lm(T1.mean ~ T3.mean, data = no_outliers)
+summary(fit)
+
+# CHECK RESIDUALS UTLIERS REMOVED
+#define residuals
+res <- resid(fit)
+
+#produce residual vs. fitted plot
+plot(fitted(fit), res)
+#add a horizontal line at 0 
+abline(0,0)
+
+# NORMAL???
+#create Q-Q plot for residuals
+qqnorm(res)
+#add a straight diagonal line to the plot
+qqline(res) 
+
+#Create density plot of residuals
+plot(density(res))
+hist(residuals(fit), col = "steelblue")
+
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "deltaunheatcont.mean", "Unheated - Control (delta)")
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "T1.mean", "T1.mean")
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "T3.mean", "T3.mean")
+plot_TRC_delta_clean(no_outliers, TRCmac, d.begin, d.end, "T3.mean", "T1.mean", "Heated vs Control")
+
+#define new data frame of values to predict
+# newdata = data.frame(T3.mean=c(15, 20, 25, 30, 35, 40, 45))
+#use model to predict points for all three players
+# newdata$t3pred <- predict(fit, no_outliers)
+# newdata$t3diff <- newdata$t3pred - newdata$T3.mean
+# mean(newdata$t3diff)
+
+# Paired Samples t-test: Assumptions
+# 
+# For the results of a paired samples t-test to be valid, the following assumptions should be met:
+# 
+#     The participants should be selected randomly from the population.
+#     The differences between the pairs should be approximately normally distributed.
+#     There should be no extreme outliers in the differences.
+
+
+# t.test(no_outliers$T2.mean, no_outliers$T3.mean,
+#        data = no_outliers,
+#        paired = TRUE)
+
+# FINAL STATS TO REPORT
+# A paired samples t-test is a statistical test that compares the means of 
+# two samples when each observation in one sample can be paired with an 
+# observation in the other sample.
+# 
+# μd is the mean difference.
+# H0: μd = 0 
+# 
+# Ha: μd ≠ 0 (two-tailed)
+# Ha: μd > 0 (one-tailed)
+# Ha: μd < 0 (one-tailed)
+
+t.test(no_outliers$T1.mean, no_outliers$T3.mean,
+       data = no_outliers,
+       alternative = "two.sided",
+       paired = TRUE)
+
+
+```

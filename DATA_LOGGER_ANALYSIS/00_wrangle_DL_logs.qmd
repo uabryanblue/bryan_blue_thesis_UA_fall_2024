@@ -1,0 +1,1344 @@
+---
+title: "Clean Data Logger Sensor Data"
+author: "Bryan Blue"
+
+execute:
+  echo: false
+format: 
+  html:
+    code-fold: true
+    fig-width: 8
+    fig-height: 6
+  pdf:
+    fig-width: 8
+    fig-height: 6
+---
+
+```{r init}
+#| echo: false
+#| warning: false
+#| include: false
+
+# https://www.regextester.com/ for regex checking
+
+# advanced conflict resolution
+# https://conflicted.r-lib.org/
+# install.packages("devtools")
+library(conflicted)
+
+library(here)
+conflicts_prefer(here::here)
+
+library(readr)
+library(purrr)
+library(dplyr)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::arrange)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::summarize)
+conflicts_prefer(dplyr::mutate)
+
+library(lubridate)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(patchwork)
+
+library(stringr)
+# start in the current project directory
+# this ensures relative paths will work
+# independent of the location the script
+here::here()
+
+source("DL_experiment_logs_functions.R")
+
+# constants to data paths
+DATARAW <- "data_raw" # TREAT READ ONLY. Raw LICOR data logs.
+DATACLEAN <- "data_clean" # files generated from data_raw through data wrangling
+DATAUSER <- "data_user" # data the user manually enters or manipulates
+FIGSTORAGE <- "figures" # the relative path to store ggplots
+
+LEVEL <- 2 # changed to see other experiment data
+# change later if needed, this is the new variable ELEVATION <- 2 # elevation (mountain level) of the experiment, numeric value of 2 or 3
+
+# initialize a default column name in finaldata df
+plantvariable <- "GasEx_A" 
+
+# list of the three TREATMENTS in this experiment
+# used in data manipulation and plots
+TREATMENTS <- c("Control", "Heated", "Unheated")
+# list of main variables of interest
+LICORVARS <- c("GasEx_A", "GasEx_gsw", "GasEx_VPDleaf", "GasEx_VPDleaf", "GasEx_Emm")
+```
+
+## Load Data Logger Data
+
+Many climate and TRC data logs exist. Read them all into a "raw\_" df\
+Run unique on each df due to an SD card not erased before being reused.\
+Break each log into the individual sensors values which correspond to the MAC address in the file.
+
+### Data Issues
+
+Are all of the logs from a valid start dates?\
+There are more MAC address than should be here for the actual experiment. These need identified and removed.\
+TRC data has duplication of 2 MAC addresses. One in the all capital MAC format, and one in the colon version. These need combined or removed.\
+TRC has one line that is NA which needs removed.
+
+### Hardware Inventory
+
+Use MAC address to reference the function of the microprocessor. It appears in logs and should be considered the primary key to the data.
+
+| ID  | DATE      | DEVICE             | FUNCTION    | MAC          | DESCRIPTION      | Level |
+|-----------|-----------|-----------|-----------|-----------|-----------|-----------|
+| M01 | 9/24/2023 | ESP8266 NodeMCU V2 | Data Logger | 485519DF2986 | DL1 - TIMESERVER | 1     |
+| M02 | 9/24/2023 | ESP8266 NodeMCU V2 | Data Logger | 8CAAB54D7F18 | DL2              | 1     |
+| M12 | 9/25/2023 | ESP8266 NodeMCU V2 | Climate Sensor  | 48E72952E8D2 | THP4             | 1     |
+| M10 | 9/25/2023 | ESP8266 NodeMCU V2 | Warming Device Control | 48E7295348F8 | TRC              | 1     |
+| M05 | 9/25/2033 | ESP8266 NodeMCU V2 | Climate Sensor  | 48E72953672E | THP2             | 2     |
+| M08 | 9/25/2023 | ESP8266 NodeMCU V2 | Warming Device Control | 48E7295552AD | TRC              | 2     |
+| M04 | 9/25/2023 | ESP8266 NodeMCU V2 | Climate Sensor  | 485519DF2848 | THP3             | 3     |
+| M09 | 9/24/2023 | ESP8266 NodeMCU V2 | Warming Device Control | 48E729537E2C | TRC              | 3     |
+
+: Hardware Inventory - see "device_mapping.csv" in the folder `r DATARAW` for the latest values.
+
+### TC Information
+
+Each 735nm TRC module has support for five thermocouples (TC). Each port is numbered 1 through 5.\
+They represent:
+
+| TC1       | TC2     | TC3       | TC4  | TC5      |
+|-----------|---------|-----------|------|----------|
+| Heated | Unheated | Control | Heated Pad | Non-Heated Pad |
+
+: 735nm Thermocouple Designations - each TC has a unique name and two point calibration coefficients. These are grouped into five, based on one 735nm TRC configuration. See "conf.py" in the "735nm_TRC" code for the latest groupings.  
+
+The climate sensor temperature and relative humidity data were used to calculate Saturated Vapor Pressure (SVP), which was used to calculate Vapor Pressure Deficit (VPD). These were appended to the climate data dataframe.
+
+
+```{r load_data}
+#| echo: false
+#| warning: false
+
+# Read in all data
+# Ensure all MAC addresses are in UPPER case and do not contain colons ':'
+# NOTE: HEX values are not touched - error
+
+# ASPIRATED CLIMATE SENSOR DATA
+# read in all climate
+climate_data <- read_climate_log_data()
+# add saturated vapor pressure (SVP) calculation
+
+climate_data <- climate_data %>%
+  mutate(SVP = 610.78 * exp((temp_C / (temp_C + 238.3) * 17.2694)) / 1000)
+climate_data$SVP = round(climate_data$SVP, digits = 4)
+
+# add vapor pressure deficite (VDP) calculation
+climate_data <- climate_data %>%
+  mutate(VPD = SVP * (1 - RH / 100))
+climate_data$VPD = round(climate_data$VPD, digits = 4)
+
+
+# TEMPERATURE RELAY SENSOR AND CONTROL DATA
+# read in all TRC data
+TRC_data <- read_TRC_log_data()
+
+# calibration data with slope and intercepts
+TC_calibration_data <- read_TC_calibration_data(here(DATARAW, "manual_2_pt_TC_calibration_values.csv"))
+
+# this is the mapping of calibrated TC to the experiment and TRC port
+TC_mapping_data <- read_TC_mapping_data(here(DATARAW, "TRC_calibration_mapping.csv"))
+# MAC address of esp8266 to sensor function
+MACmap <- read_device_mapping_data(here(DATARAW, "device_mapping.csv"))
+
+# filter out anything except the MAC addresses in use for this analysis
+# these are identified by the mac mapping level value: 1, 2, 3 are valid
+# strip out testing data at the beginning
+climate_data <- climate_data %>% 
+  dplyr::filter(climate_data$sensor_MAC %in% MACmap[MACmap$role == "Climate Sensor",]$MAC &
+                  MACmap$level %in% c(1, 2, 3))
+
+TRC_data<- TRC_data %>% 
+  dplyr::filter(TRC_data$sensor_MAC %in% MACmap[MACmap$role == "Warming Device Control",]$MAC &
+                  MACmap$level %in% c(1, 2, 3))# &
+#TODO is this necessary? TRC_data$DL_datetime > as.POSIXct("2023-03-01 00:00:00"))
+
+# climate_data <- left_join(climate_data, MACmap, by = join_by(sensor_MAC == MAC))
+write_csv(climate_data, here(DATACLEAN, "cleaned_climate_data.csv"),
+          na = "NA",
+          append = FALSE)
+
+# TRC_data <- left_join(TRC_data, MACmap, by = join_by(sensor_MAC == MAC))
+write_csv(TRC_data, here(DATACLEAN, "cleaned_TRC_data.csv"),
+          na = "NA",
+          append = FALSE)
+
+
+# create climate summary statistics  
+create_hourly_climate_statistics <- function(climate_data, MACmap) {
+  
+  climate_hour_stats <- climate_data %>%
+    group_by(sensor_MAC, DL_datetime = floor_date(DL_datetime, 'hour')) %>%
+    # summarize(sum_sales=sum(sales))
+    summarise(across(c(temp_C, RH, pressure, VPD),
+                     list(mean = mean, median = median, min = min, max = max, sd = sd),
+                     .names = "{.col}.{.fn}"))
+  
+  # round all numeric values to an arbitrary selected 4 digits
+  climate_hour_stats <- climate_hour_stats %>%
+    mutate_if(is.numeric, round, 4)
+  
+  # add the information about the device based on the MAC address
+  climate_hour_stats <- left_join(climate_hour_stats, MACmap, by = join_by(sensor_MAC == MAC)) 
+  
+  return(climate_hour_stats)
+  
+}
+
+# create daily climate summary statistics  
+create_daily_climate_statistics <- function(climate_data, MACmap) {
+  
+  climate_day_stats <- climate_data %>%
+    group_by(sensor_MAC, DL_datetime = floor_date(DL_datetime, 'day')) %>%
+    # summarize(sum_sales=sum(sales))
+    summarise(across(c(temp_C, RH, pressure, VPD),
+                     # list(mean = mean),
+                     list(mean = mean, median = median, min = min, max = max, sd = sd),
+                     .names = "{.col}.{.fn}"))
+  
+  # round all numeric values to an arbitrary selected 4 digits
+  climate_day_stats <- climate_day_stats %>%
+    mutate_if(is.numeric, round, 4)
+  climate_day_stats$DL_date <- format(climate_day_stats$DL_datetime, "%Y-%m-%d")
+  
+  # add the information about the device based on the MAC address
+  climate_day_stats <- left_join(climate_day_stats, MACmap, by = join_by(sensor_MAC == MAC)) 
+  
+  return(climate_day_stats)
+  
+}
+
+# create daily climate summary statistics  
+create_weekly_climate_statistics <- function(climate_data, MACmap) {
+  
+  climate_week_stats <- climate_data %>%
+    group_by(sensor_MAC, DL_datetime = floor_date(DL_datetime, 'week')) %>%
+    # summarize(sum_sales=sum(sales))
+    summarise(across(c(temp_C, RH, pressure, VPD),
+                     # list(mean = mean),
+                     list(mean = mean, median = median, min = min, max = max, sd = sd),
+                     .names = "{.col}.{.fn}"))
+  
+  # round all numeric values to an arbitrary selected 4 digits
+  climate_week_stats <- climate_week_stats %>% mutate_if(is.numeric, round, 4)
+  
+  # add the information about the device based on the MAC address
+  climate_week_stats <- left_join(climate_week_stats, MACmap, by = join_by(sensor_MAC == MAC)) 
+  
+  return(climate_week_stats)
+  
+}
+
+create_level_climate_statistics <- function(climate_data) {
+  
+  level_stats <- climate_data %>%
+    group_by(sensor_MAC) %>%
+    # summarize(sum_sales=sum(sales))
+    summarise(across(c(DL_datetime, temp_C, RH, pressure, VPD),
+                     # list(mean = mean),
+                     list(mean = mean, median = median, min = min, max = max, sd = sd),
+                     .names = "{.col}.{.fn}"))
+  
+  # round all numeric values to an arbitrary selected 4 digits
+  level_stats <- level_stats %>% 
+    mutate_if(is.numeric, round, 4)
+  
+  # add the information about the device based on the MAC address
+  level_stats <- left_join(level_stats, MACmap, by = join_by(sensor_MAC == MAC)) 
+  
+  level_stats <- level_stats %>%
+    arrange(level)
+  
+  level_stats$DL_datetime.min <- as.Date(level_stats$DL_datetime.min)
+  level_stats$DL_datetime.max <- as.Date(level_stats$DL_datetime.max)
+  # these have no meaning, remove them
+  level_stats$DL_datetime.mean <- NULL
+  level_stats$DL_datetime.mean <- NULL
+  level_stats$DL_datetime.sd <- NULL
+  
+  # level_stats <- level_stats %>%
+  #   rename(Begin_Date = DL_datetime.min,
+  #          End_Date = DL_datetime.max,
+  #         T_mean = temp_C.mean,  
+  #         T_min = temp_C.min,  
+  #         T_max = temp_C.max,  
+  #         T_SD = temp_C.sd  
+  #          )
+  
+  t_stats <- level_stats %>%
+    select(level, DL_datetime.min, DL_datetime.max, temp_C.min, temp_C.max, temp_C.mean, temp_C.sd) %>%
+    rename(Begin_Date = DL_datetime.min,
+           End_Date = DL_datetime.max,
+           T_mean = temp_C.mean,  
+           T_min = temp_C.min,  
+           T_max = temp_C.max,  
+           T_SD = temp_C.sd  
+    )
+  write_csv(t_stats, here(DATACLEAN, "temperature_all_climate_stats.csv"),
+            na = "NA",
+            append = FALSE)
+  
+  rh_stats <- level_stats %>%
+    select(level, DL_datetime.min, DL_datetime.max, RH.min, RH.max, RH.mean, RH.sd) %>%
+    rename(Begin_Date = DL_datetime.min,
+           End_Date = DL_datetime.max,
+           RH_mean = RH.mean,  
+           RH_min = RH.min,  
+           RH_max = RH.max,  
+           RH_SD = RH.sd  
+    )
+  write_csv(rh_stats, here(DATACLEAN, "relative_humidity_all_climate_stats.csv"),
+            na = "NA",
+            append = FALSE)
+  
+  vpd_stats <- level_stats %>%
+    select(level, DL_datetime.min, DL_datetime.max, VPD.min, VPD.max, VPD.mean, VPD.sd) %>%
+    rename(Begin_Date = DL_datetime.min,
+           End_Date = DL_datetime.max,
+           VPD_mean = VPD.mean,  
+           VPD_min = VPD.min,  
+           VPD_max = VPD.max,  
+           VPD_SD = VPD.sd  
+    )
+  write_csv(vpd_stats, here(DATACLEAN, "VPD_all_climate_stats.csv"),
+            na = "NA",
+            append = FALSE)
+  
+  pres_stats <- level_stats %>%
+    select(level, DL_datetime.min, DL_datetime.max, pressure.min, pressure.max, pressure.mean, pressure.sd)%>%
+    rename(Begin_Date = DL_datetime.min,
+           End_Date = DL_datetime.max,
+           Pressure_mean = pressure.mean,  
+           Pressure_min = pressure.min,  
+           Pressure_max = pressure.max,  
+           Pressure_SD = pressure.sd  
+    )
+  write_csv(pres_stats, here(DATACLEAN, "pressure_all_climate_stats.csv"),
+            na = "NA",
+            append = FALSE)
+  
+  return(level_stats)
+}
+
+
+
+# create climate summary statistics  
+create_hourly_TRC_statistics <- function(TRC_data, MACmap) {
+  
+  # create TRC summary statistics
+  # heated treatment minus control
+  TRC_data$deltaheatcont <- TRC_data$T1 - TRC_data$T3
+  # unheated treatment minus control
+  TRC_data$deltaunheatcont <- TRC_data$T2 - TRC_data$T3
+  # Heated treatment minus Unheated treatment
+  TRC_data$deltaheatunheat <- TRC_data$T1 - TRC_data$T2
+  # Heated pad minus Unheated pad
+  TRC_data$deltaheatunheatpad <- TRC_data$T4 - TRC_data$T5
+  
+  TRC_hour_stats <- TRC_data %>%
+    group_by(sensor_MAC, DL_datetime = floor_date(DL_datetime, 'hour')) %>%
+    # summarize(sum_sales=sum(sales))
+    summarise(across(c(deltaheatcont, deltaunheatcont, deltaheatunheat, deltaheatunheatpad, T1, T2, T3, T4, T5, CJ1, CJ2, CJ2, CJ3, CJ4, CJ5),
+                     list(mean = mean),
+                     # list(mean = mean, median = median, min = min, max = max, sd = sd),
+                     .names = "{.col}.{.fn}"))
+  
+  # round all numeric values to an arbitrary selected 4 digits
+  TRC_hour_stats <- TRC_hour_stats %>%
+    mutate_if(is.numeric, round, 4)
+  
+  # add the information about the device based on the MAC address
+  TRC_hour_stats <- left_join(TRC_hour_stats, MACmap, by = join_by(sensor_MAC == MAC)) 
+  
+  return(TRC_hour_stats)
+  
+}
+
+
+
+```
+
+### Climate Data Sensor Results
+
+The climate data contains sensors with these MAC addresses:\
+`r unique(climate_data$sensor_MAC)`\
+These are going to be used:\
+`r MACmap[MACmap$role == "Climate Sensor",]$MAC`
+
+### TRC Data Sensor Results
+
+The TRC data contains sensors with these MAC addresses:\
+`r unique(TRC_data$sensor_MAC)`\
+These are going to be used:\
+`r MACmap[MACmap$role == "Warming Device Control",]$MAC`
+
+Thermocouple data needs to be calibrated. Calibrated data was used in the TRC program to control the heating, but raw data were sent to the data logs.  
+```{r calibrate_TRC_data}
+
+# calibrate all TC values in TRC_data based on the MAC, level and board position
+
+calibrate_TC <- function(TRC_data, sensorMAC, lvl, boardpos) {
+  Tc1 <- as.character(TC_mapping_data %>%
+                        filter(sensor_MAC == sensorMAC &
+                                 level == lvl &
+                                 board_pos == boardpos) %>%
+                        select(TC_name))
+  
+  m <- as.numeric(TC_calibration_data %>%
+                    filter(TC_Name == Tc1) %>%
+                    select(Slope))
+  b <- as.numeric(TC_calibration_data %>%
+                    filter(TC_Name == Tc1) %>%
+                    select(Intercept))
+  
+  
+  port <- paste("T", boardpos, sep = '')
+  
+  # print(paste("port:",port,"Tc1:",Tc1))
+  
+  TRC_data[[port]][TRC_data$sensor_MAC == sensorMAC] <- 
+    round(((m * TRC_data[[port]][TRC_data$sensor_MAC == sensorMAC]) + b), 2)
+  
+  return(TRC_data)
+}
+```
+
+```{r}
+# TODO this should be changed to lapply()
+# calibrate each thermocouple based on level and TC position within TRC enclosure
+TRC_data <- calibrate_TC(TRC_data, "48E7295348F8", 1, 1)
+TRC_data <- calibrate_TC(TRC_data, "48E7295348F8", 1, 2)
+TRC_data <- calibrate_TC(TRC_data, "48E7295348F8", 1, 3)
+TRC_data <- calibrate_TC(TRC_data, "48E7295348F8", 1, 4)
+TRC_data <- calibrate_TC(TRC_data, "48E7295348F8", 1, 5)
+
+TRC_data <- calibrate_TC(TRC_data, "48E7295552AD", 2, 1)
+TRC_data <- calibrate_TC(TRC_data, "48E7295552AD", 2, 2)
+TRC_data <- calibrate_TC(TRC_data, "48E7295552AD", 2, 3)
+TRC_data <- calibrate_TC(TRC_data, "48E7295552AD", 2, 4)
+TRC_data <- calibrate_TC(TRC_data, "48E7295552AD", 2, 5)
+
+TRC_data <- calibrate_TC(TRC_data, "48E729537E2C", 3, 1)
+TRC_data <- calibrate_TC(TRC_data, "48E729537E2C", 3, 2)
+TRC_data <- calibrate_TC(TRC_data, "48E729537E2C", 3, 3)
+TRC_data <- calibrate_TC(TRC_data, "48E729537E2C", 3, 4)
+TRC_data <- calibrate_TC(TRC_data, "48E729537E2C", 3, 5)
+
+```
+Climate and Heating data are loaded and combined with additional metadata located in device_mapping.csv.  
+The combined data are written into to ./data_clean/clean_climate_data.csv and clean_TRC_data.csv.  
+```{r save_clean_data}
+
+write_csv(TRC_data, here(DATACLEAN, "calibrated_TRC_data.csv"),
+          na = "NA",
+          append = FALSE)
+
+# stats for the plots
+TRC_hour_stats <- create_hourly_TRC_statistics(TRC_data, MACmap)
+write_csv(TRC_hour_stats, here(DATACLEAN, "TRC_hour_stats.csv"),
+          na = "NA",
+          append = FALSE)
+
+# stats for the plots
+climate_hour_stats <- create_hourly_climate_statistics(climate_data, MACmap)
+write_csv(climate_hour_stats, here(DATACLEAN, "climate_hour_stats.csv"),
+          na = "NA",
+          append = FALSE)
+
+climate_day_stats <- create_daily_climate_statistics(climate_data, MACmap)
+write_csv(climate_day_stats, here(DATACLEAN, "climate_day_stats.csv"),
+          na = "NA",
+          append = FALSE)
+
+climate_week_stats <- create_weekly_climate_statistics(climate_data, MACmap)
+write_csv(climate_week_stats, here(DATACLEAN, "climate_week_stats.csv"),
+          na = "NA",
+          append = FALSE)
+
+```
+
+```{r THP_stats}
+
+plot_climate_VPD <- function(averaged_stats, pmac, d.begin, d.end) {
+  
+  title_begin <- format.Date(d.begin, "%D")
+  title_end <- format.Date(d.end, "%D")
+  
+  averaged_stats <- averaged_stats %>% 
+    filter(DL_datetime >= as.POSIXct(d.begin) & 
+             DL_datetime <= as.POSIXct(d.end) &
+             sensor_MAC == pmac) 
+  
+  tmin <- round(min(averaged_stats$VPD.mean, na.rm = TRUE), 4)
+  tmax <- round(max(averaged_stats$VPD.mean, na.rm = TRUE), 4)
+  sd <- round(sd(averaged_stats$VPD.mean, na.rm = TRUE), 4)
+  
+  title1 <- paste("VPD on Level", averaged_stats$level, "Sensor Name:", averaged_stats$name, sep = " ")
+  title2 <- paste(title_begin, "-", title_end)
+  title3 <- paste("Minimum: ", tmin,  ", Maximum: ", tmax, "SD: ", sd, sep = "")
+  Ttitle <- paste(title1, title2, title3, sep = "\n")
+  
+  plotdiff <- ggplot(data = averaged_stats, 
+                     aes(x = DL_datetime, y = VPD.mean, color = "VPD")) +
+    
+    # aes(x = Date, y = VPD.mean, color = "VPD Mean")) +
+    geom_point(size = 0.75) +
+    geom_smooth(se = TRUE, color = "red") +
+    # geom_smooth(method='lm', se = FALSE, na.rm = TRUE) +
+    # 
+    #                    ggplot() +
+    # geom_point(data = averaged_stats,
+    #           aes(x = as.Date(Date), y = VPD.mean, color = "VPD Mean")) + 
+    # geom_smooth() +
+    ggtitle(Ttitle) +
+    xlab("Date (Day)") +
+    ylab("Hourly VPD (15 minute average)") +
+    scale_color_manual(name=' Daily VPD',
+                       breaks=c('VPD', 'RH Mean', 'T Mean'),
+                       values=c('RH Mean'='#619CFF', 'T Mean'='#F8766D', 'VPD'='darkorange')) +
+    scale_x_datetime(date_breaks = "1 week",
+                     date_minor_breaks = "1 day",
+                     date_labels = "%b %d") +
+    
+    theme(axis.text.x = element_text(angle = 60, hjust = 1)) #+
+  # coord_cartesian(ylim=c(35,100))
+  
+  return(plotdiff)
+}
+
+plot_climate_Temperature <- function(averaged_stats, pmac, d.begin, d.end) {
+  
+  title_begin <- format.Date(d.begin, "%D")
+  title_end <- format.Date(d.end, "%D")
+  
+  averaged_stats <- averaged_stats %>% 
+    filter(DL_datetime >= as.POSIXct(d.begin) & 
+             DL_datetime <= as.POSIXct(d.end) &
+             sensor_MAC == pmac) 
+  
+  tmin <- round(min(averaged_stats$temp_C.mean, na.rm = TRUE), 4)
+  tmax <- round(max(averaged_stats$temp_C.mean, na.rm = TRUE), 4)
+  tmean <- round(mean(averaged_stats$temp_C.mean, na.rm = TRUE), 4)
+  sd <- round(sd(averaged_stats$temp_C.mean, na.rm = TRUE), 4)
+  
+  title1 <- paste("Temperature on Level", averaged_stats$level, "Sensor Name:", averaged_stats$name, sep = " ")
+  title2 <- paste(title_begin, "-", title_end)
+  title3 <- paste("Minimum: ", tmin,  ", Maximum: ", tmax, ", SD: ", sd, sep = "")
+  Ttitle <- paste(title1, title2, title3, sep = "\n")
+  
+  plotdiff <- ggplot(data = averaged_stats, 
+                     aes(x = DL_datetime, y = temp_C.mean, color = "T Mean")) +
+    
+    geom_point(size = 0.5) +
+    geom_smooth(se = FALSE, color = "red") +
+    
+    ggtitle(Ttitle) +
+    xlab("Date (Day)") +
+    ylab("Hourly Temperature (15 minute average)") +
+    scale_color_manual(name=' Daily Temperature',
+                       breaks=c('VPD', 'RH Mean', 'T Mean'),
+                       values=c('RH Mean'='#619CFF', 'T Mean'='#F8766D', 'VPD'='darkorange')) +
+    scale_x_datetime(date_breaks = "1 week",
+                     date_minor_breaks = "1 day",
+                     date_labels = "%b %d") +
+    
+    theme(axis.text.x = element_text(angle = 60, hjust = 1)) #+
+  # coord_cartesian(ylim=c(35,100))
+  
+  return(list(plotdiff, tmin, tmax, tmean, sd))
+}
+
+
+plot_climate_RH <- function(averaged_stats, pmac, d.begin, d.end) {
+  
+  title_begin <- format.Date(d.begin, "%D")
+  title_end <- format.Date(d.end, "%D")
+  
+  averaged_stats <- averaged_stats %>% 
+    filter(DL_datetime >= as.POSIXct(d.begin) & 
+             DL_datetime <= as.POSIXct(d.end) &
+             sensor_MAC == pmac) 
+  
+  tmin <- round(min(averaged_stats$RH.mean, na.rm = TRUE), 4)
+  tmax <- round(max(averaged_stats$RH.mean, na.rm = TRUE), 4)
+  tmean <- round(mean(averaged_stats$RH.mean, na.rm = TRUE), 4)
+  sd <- round(sd(averaged_stats$RH.mean, na.rm = TRUE), 4)
+  
+  title1 <- paste("Relative Humidity on Level", averaged_stats$level, "Sensor Name:", averaged_stats$name, sep = " ")
+  title2 <- paste(title_begin, "-", title_end)
+  title3 <- paste("Minimum: ", tmin,  ", Maximum: ", tmax, ", Mean: ", tmean, ", SD: ", sd, sep = "")
+  Ttitle <- paste(title1, title2, title3, sep = "\n")
+  
+  plotdiff <- ggplot(data = averaged_stats, 
+                     aes(x = DL_datetime, y = RH.mean, color = "RH Mean")) +
+    
+    geom_point(size = 0.5) +
+    geom_smooth(se = FALSE, color = "red") +
+    
+    ggtitle(Ttitle) +
+    xlab("Date (Day)") +
+    ylab("Hourly Relative Humidity (15 minute average)") +
+    scale_color_manual(name=' Daily Relative Humidity',
+                       breaks=c('VPD', 'RH Mean', 'T Mean', 'Minimum'),
+                       values=c('RH Mean'='#619CFF', 'T Mean'='#F8766D', 'Minimum'='#00BA38', 'VPD'='darkorange')) +
+    scale_x_datetime(date_breaks = "1 week",
+                     date_minor_breaks = "1 day",
+                     date_labels = "%b %d") +
+    
+    theme(axis.text.x = element_text(angle = 60, hjust = 1)) #+
+  # coord_cartesian(ylim=c(35,100))
+  
+  return(plotdiff)
+}
+
+
+```
+
+```{r}
+
+
+
+# these are stats for the creation of plots
+create_level_climate_statistics(climate_data)
+
+# level 1 - experiment never installed
+LEVEL <- 1
+THPmac <- filter(MACmap, level == LEVEL &
+                   role == "Climate Sensor")$MAC
+# print(THPmac)
+
+d.begin <- "2023-12-08 00:00:00"
+d.end <- "2024-05-08 00:00:00"
+# pmac1 <- "48E72952E8D2"
+plot_climate_RH(climate_hour_stats, THPmac, d.begin, d.end)
+plot_climate_Temperature(climate_hour_stats, THPmac, d.begin, d.end)
+plot_climate_VPD(climate_hour_stats, THPmac, d.begin, d.end)
+
+```
+
+```{r}
+# need hourly stats from 15 minute averages from B2 sensors
+plot_temperature_statistics <- function(temperature_data, label, location) {
+  
+  tmin <- round(min(temperature_data$temp.min),2)
+  tmax <- round(max(temperature_data$temp.min), 2)
+  tmean <- round(mean(temperature_data$temp.min),2)
+  tsd <- round(sd(temperature_data$temp.min),2)
+  
+  x.tmin <- round(min(temperature_data$temp.max),2)
+  x.tmax <- round(max(temperature_data$temp.max), 2)
+  x.tmean <- round(mean(temperature_data$temp.max),2)
+  x.tsd <- round(sd(temperature_data$temp.max),2)
+  
+  temperature_data$diff <- round((temperature_data$temp.max - temperature_data$temp.min), 2)
+  
+  # plot hourly trends ---------------
+  pminmax <- ggplot(data = temperature_data) +
+    # geom_point(aes(x = hour, y = temp.max, color = 'Moutain 100 MAX'), size = 0.25) +
+    geom_smooth(aes(x = hour, y = temp.max), se = FALSE, color = "red", linewidth = 1) +
+    # geom_point(data = temperature_data, aes(x = hour, y = temp.min, color = 'Moutain 100 MIN'), size=0.25) +
+    geom_smooth(aes(x = hour, y = temp.min), se = FALSE, color = "blue", linewidth = 1) +
+    # geom_smooth(aes(x = hour, y = diff), se = FALSE, color = "green", linewidth = 1) +
+    ggtitle(paste("Biosphere 2 Tower 2023,", location, "-", label,   
+                  "\nMaximum - Min:", x.tmin, "Max:", x.tmax, "Mean:", x.tmean, "SD:", x.tsd,
+                  "\nMinimum - Min:", tmin, "Max:", tmax, "Mean:", tmean, "SD:", tsd
+                  )) +
+    xlab("Hour") +
+    ylab(label) +
+    theme(axis.text.x=element_text(angle=60, hjust=1)) #+
+    # coord_cartesian(ylim = c(20,35))
+  
+
+    ggsave(here(FIGSTORAGE, paste("B2_", str_replace_all(location, " ", "_"), "_", str_extract(label, "^[^ ]+"), ".png", sep = '')),
+         plot = last_plot(),
+         device = "png",
+         width = 6, height = 4, units = "in") 
+  
+  
+  # plot hourly mean differences ---------------
+  pdiff <- ggplot(data = temperature_data) +
+    # geom_point(aes(x = hour, y = temp.max, color = 'Moutain 100 MAX'), size = 0.25) +
+    # geom_smooth(aes(x = hour, y = temp.max), se = FALSE, color = "red", linewidth = 1) +
+    # geom_point(data = temperature_data, aes(x = hour, y = temp.min, color = 'Moutain 100 MIN'), size=0.25) +
+    # geom_smooth(aes(x = hour, y = temp.min), se = FALSE, color = "blue", linewidth = 1) +
+    geom_point(aes(x = hour, y = diff, color = label), size=0.25) +
+    geom_smooth(aes(x = hour, y = diff), se = FALSE, color = "black", linewidth = 1) +
+    ggtitle(paste("Biosphere 2 Tower 2023,", location, "-", label,   
+                  "\nMaximum - Min:", x.tmin, "Max:", x.tmax, "Mean:", x.tmean, "SD:", x.tsd,
+                  "\nMinimum - Min:", tmin, "Max:", tmax, "Mean:", tmean, "SD:", tsd
+                  )) +
+    xlab("Hour") +
+    ylab(label) +
+    # theme_bw() +
+    theme(axis.text.x=element_text(angle=60, hjust=1)) #+
+    # coord_cartesian(ylim = c(0,1.5))
+  
+    ggsave(here(FIGSTORAGE, paste("B2_", str_replace_all(location, " ", "_"), "_", str_extract(label, "^[^ ]+"), "_trend.png", sep = '')),
+         plot = last_plot(),
+         device = "png",
+         width = 6, height = 4, units = "in") 
+  
+  print(pminmax)
+  print(pdiff)
+  
+}
+
+convert_to_hourly_stats <- function(statdata) {
+  
+  plot_hour_stats <- statdata
+  colnames(plot_hour_stats) <- c("date_time", "temp")
+  plot_hour_stats <- plot_hour_stats %>%
+    filter(date_time >= date("2023-01-01") & date_time < date("2024-01-01")) %>% 
+    group_by(hour = floor_date(date_time, 'hour')) %>%
+    summarise(across(c(temp),
+                     list(avg_temp = mean, median = median, min = min, max = max, sd = sd),
+                     .names = "{.col}.{.fn}"))
+  
+  return(plot_hour_stats)
+  
+}
+```
+
+```{r}
+
+# level 2
+LEVEL <- 2
+
+THPmac <- filter(MACmap, level == LEVEL &
+                   role == "Climate Sensor")$MAC
+# print(THPmac)
+
+d.begin <- "2023-11-17 00:00:00"
+d.end <- "2024-05-08 00:00:00"
+
+
+plot_hour_stats <- climate_data %>%
+  filter(DL_datetime >= date(d.begin) &
+           DL_datetime < date(d.end)  &
+           as.character(sensor_MAC) == THPmac) %>% 
+  select(DL_datetime, temp_C)
+
+colnames(plot_hour_stats) <- c("date_time", "temp")
+
+plot_hour_stats <- plot_hour_stats %>% 
+  group_by(hour = floor_date(date_time, 'hour')) %>%
+  summarise(across(c(temp),
+                   list(avg_temp = mean, median = median, min = min, max = max, sd = sd),
+                   .names = "{.col}.{.fn}"))
+
+plot_temperature_statistics(plot_hour_stats, "Temperature (C)", "Experiment 2")
+
+
+plot_hour_stats <- climate_data %>%
+  filter(DL_datetime >= date(d.begin) &
+           DL_datetime < date(d.end)  &
+           as.character(sensor_MAC) == THPmac) %>% 
+  select(DL_datetime, RH)
+
+colnames(plot_hour_stats) <- c("date_time", "temp")
+
+plot_hour_stats <- plot_hour_stats %>% 
+  group_by(hour = floor_date(date_time, 'hour')) %>%
+  summarise(across(c(temp),
+                   list(avg_temp = mean, median = median, min = min, max = max, sd = sd),
+                   .names = "{.col}.{.fn}"))
+plot_temperature_statistics(plot_hour_stats, "Relative Humidity (%)", "Experiment 2")
+
+# pmac2 <- "48E72953672E" # climate sensor level 2
+# plot_daily_temperature_stats(climate_day_stats, THPmac, d.begin, d.end)
+plot_climate_RH(climate_hour_stats, THPmac, d.begin, d.end)
+plot_climate_Temperature(climate_hour_stats, THPmac, d.begin, d.end)
+plot_climate_VPD(climate_hour_stats, THPmac, d.begin, d.end)
+
+
+# plot_climate_RH(climate_day_stats, THPmac, d.begin, d.end)
+# plot_climate_Temperature(climate_day_stats, THPmac, d.begin, d.end)
+# plot_climate_VPD(climate_day_stats, THPmac, d.begin, d.end)
+# 
+# plot_climate_RH(climate_week_stats, THPmac, d.begin, d.end)
+# plot_climate_Temperature(climate_week_stats, THPmac, d.begin, d.end)
+# plot_climate_VPD(climate_week_stats, THPmac, d.begin, d.end)
+
+```
+
+```{r}
+# level 3
+LEVEL <- 3
+
+THPmac <- filter(MACmap, level == LEVEL &
+                   role == "Climate Sensor")$MAC
+# print(THPmac)
+
+# first run of level 3
+# pmac3 <- "485519DF2848" # climate sensor level 3
+d.begin <- "2023-11-29 00:00:00"
+d.end <- "2024-03-20 00:00:00"
+
+# this is reused code, it is always looking for "temp"
+# so all values, no matter what is of interest, is renamed to "temp"
+plot_hour_stats <- climate_data %>%
+  filter(DL_datetime >= date(d.begin) &
+           DL_datetime < date(d.end)  &
+           as.character(sensor_MAC) == THPmac) %>% 
+  select(DL_datetime, temp_C)
+
+colnames(plot_hour_stats) <- c("date_time", "temp")
+
+plot_hour_stats <- plot_hour_stats %>% 
+  group_by(hour = floor_date(date_time, 'hour')) %>%
+  summarise(across(c(temp),
+                   list(avg_temp = mean, median = median, min = min, max = max, sd = sd),
+                   .names = "{.col}.{.fn}"))
+
+plot_temperature_statistics(plot_hour_stats, "Temperature (C)", "Experiment 3-1")
+
+
+plot_hour_stats <- climate_data %>%
+  filter(DL_datetime >= date(d.begin) &
+           DL_datetime < date(d.end)  &
+           as.character(sensor_MAC) == THPmac) %>% 
+  select(DL_datetime, RH)
+
+colnames(plot_hour_stats) <- c("date_time", "temp")
+
+plot_hour_stats <- plot_hour_stats %>% 
+  group_by(hour = floor_date(date_time, 'hour')) %>%
+  summarise(across(c(temp),
+                   list(avg_temp = mean, median = median, min = min, max = max, sd = sd),
+                   .names = "{.col}.{.fn}"))
+plot_temperature_statistics(plot_hour_stats, "Relative Humidity (%)", "Experiment 3-1")
+
+
+
+plot_climate_RH(climate_hour_stats, THPmac, d.begin, d.end)
+plot_climate_Temperature(climate_hour_stats, THPmac, d.begin, d.end)
+plot_climate_VPD(climate_hour_stats, THPmac, d.begin, d.end)
+
+
+```
+
+```{r}
+
+# SECOND run of level 3
+# TRCmac <- filter(MACmap, level == LEVEL &
+#                    role == "Warming Device Control")$MAC
+THPmac <- filter(MACmap, level == LEVEL &
+                   role == "Climate Sensor")$MAC
+# print(THPmac)
+
+# pmac3 <- "485519DF2848" # climate sensor level 3
+d.begin <- "2024-04-03 00:00:00"
+d.end <- "2024-05-08 00:00:00"
+
+# this is reused code, it is always looking for "temp"
+# so all values, no matter what is of interest, is renamed to "temp"
+plot_hour_stats <- climate_data %>%
+  filter(DL_datetime >= date(d.begin) &
+           DL_datetime < date(d.end)  &
+           as.character(sensor_MAC) == THPmac) %>% 
+  select(DL_datetime, temp_C)
+
+colnames(plot_hour_stats) <- c("date_time", "temp")
+
+plot_hour_stats <- plot_hour_stats %>% 
+  group_by(hour = floor_date(date_time, 'hour')) %>%
+  summarise(across(c(temp),
+                   list(avg_temp = mean, median = median, min = min, max = max, sd = sd),
+                   .names = "{.col}.{.fn}"))
+
+plot_temperature_statistics(plot_hour_stats, "Temperature (C)", "Experiment 3-2")
+
+
+plot_hour_stats <- climate_data %>%
+  filter(DL_datetime >= date(d.begin) &
+           DL_datetime < date(d.end)  &
+           as.character(sensor_MAC) == THPmac) %>% 
+  select(DL_datetime, RH)
+
+colnames(plot_hour_stats) <- c("date_time", "temp")
+
+plot_hour_stats <- plot_hour_stats %>% 
+  group_by(hour = floor_date(date_time, 'hour')) %>%
+  summarise(across(c(temp),
+                   list(avg_temp = mean, median = median, min = min, max = max, sd = sd),
+                   .names = "{.col}.{.fn}"))
+plot_temperature_statistics(plot_hour_stats, "Relative Humidity (%)", "Experiment 3-2")
+
+
+
+
+plot_climate_RH(climate_hour_stats, THPmac, d.begin, d.end)
+plot_climate_Temperature(climate_hour_stats, THPmac, d.begin, d.end)
+plot_climate_VPD(climate_hour_stats, THPmac, d.begin, d.end)
+
+
+
+```
+```{r climate_tables}
+
+
+# level_stats <- create_level_climate_statistics(climate_data) 
+# 
+# write_csv(level_stats, here(DATACLEAN, "climate_summary_stats.csv"),
+#           na = "NA",
+#           append = FALSE)
+# 
+# temp_stats <- level_stats %>% 
+#   # group_by(level) %>%
+#   select(sensor_MAC, level, temp_C.min, temp_C.max, temp_C.mean, temp_C.sd ) #%>%
+#   # arrange(level)
+# 
+# temp_stats
+
+```
+
+
+```{r TRC_statistics}
+
+plot_TRC_delta <- function(averaged_stats, pmac, d.begin, d.end, deltavar, labelvar) {
+  
+  title_begin <- format.Date(d.begin, "%D")
+  title_end <- format.Date(d.end, "%D")
+  
+  # averaged_stats <- averaged_stats %>% 
+  #   filter(DL_datetime >= as.POSIXct(d.begin) & 
+  #            DL_datetime <= as.POSIXct(d.end) &
+  #            sensor_MAC == pmac) 
+  
+  tmin <- round(min(averaged_stats[[deltavar]], na.rm = TRUE), 2)
+  tmax <- round(max(averaged_stats[[deltavar]], na.rm = TRUE), 2)
+  tmean <- round(mean(averaged_stats[[deltavar]], na.rm = TRUE), 2)
+  sd <- round(sd(averaged_stats[[deltavar]], na.rm = TRUE), 2)
+  
+  print(tmin)
+  
+  title1 <- paste(labelvar, "on Level", averaged_stats$level, "Sensor Name:", averaged_stats$name, sep = " ")
+  title2 <- paste(title_begin, "-", title_end)
+  title3 <- paste("Minimum: ", tmin,  ", Maximum: ", tmax, ", Mean: ", tmean, ", SD: ", sd, sep = "")
+  Ttitle <- paste(title1, title2, title3, sep = "\n")
+  
+  plotdiff <- ggplot(data = averaged_stats, 
+                     aes(x = DL_datetime, y = averaged_stats[[deltavar]], color = "Delta Mean")) +
+    
+    geom_point(size = 0.75) +
+    geom_smooth(se = TRUE, color = "red") +
+    # geom_smooth(color = "red") +
+    
+    
+    ggtitle(Ttitle) +
+    xlab("Date (Day)") +
+    ylab("Hourly Delta") +
+    scale_color_manual(name=' Daily Delta',
+                       breaks=c('VPD', 'RH Mean', 'T Mean', "Delta Mean"),
+                       values=c('RH Mean'='#619CFF', 'T Mean'='#F8766D', "Delta Mean"='#00BA38', 'VPD'='darkorange')) +
+    scale_x_datetime(date_breaks = "1 week",
+                     date_minor_breaks = "1 day",
+                     date_labels = "%b %d") +
+    
+    theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+    coord_cartesian(ylim=c(0,10))
+  
+  return(plotdiff)
+}
+
+
+```
+
+# Leaf Temperature Differences
+## Hourly differences between the Heated - Control leaf temperatures
+```{r plot_TRC_deltas}
+
+
+
+# ###### LEVEL 1
+LEVEL <- 1
+# change LEVEL to see plots of other TRC devices
+TRCmac <- filter(MACmap, level == LEVEL &
+                   role == "Warming Device Control")$MAC
+
+print(TRCmac)
+
+d.begin <- "2023-12-08 00:00:00"
+d.end <- "2024-04-24 00:00:00"
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "deltaheatcont.mean", "Heated - Control (delta)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "deltaunheatcont.mean", "Unheated - Control (delta)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "deltaheatunheat.mean", "Heated - Unheated (delta)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "T4.mean", "T4 (Heated Pad)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "T5.mean", "T5 (UnHeated Pad)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "deltaheatunheatpad.mean", "Heated Pad - Unheated Pad (delta)")
+
+
+# ###### LEVEL 2
+
+# Missing data between 12-20-2023 and 1-17-2024
+# 48E729537E2C	2023-12-20T14:00:00Z	0.428	25.461	23.83	25.033	42.593	30.406	29.507	29.926	28.873	28.721	27.592	Warming Device Control	TRC4	3	NA
+# 48E729537E2C	2024-01-17T14:00:00Z	0.0825	26.4375	25.45	26.355	44.28	35.395	30.2725	30.7375	29.755	29.6175	28.3825	Warming Device Control	TRC4	3	NA
+
+LEVEL <- 2
+# change LEVEL to see plots of other TRC devices
+TRCmac <- filter(MACmap, level == LEVEL &
+                   role == "Warming Device Control")$MAC
+
+print(TRCmac)
+
+d.begin <- "2023-11-17 00:00:00"
+d.end <- "2024-05-08 00:00:00"
+
+
+HC_averaged_stats <- TRC_hour_stats %>% 
+  filter(DL_datetime >= as.POSIXct(d.begin) & 
+           DL_datetime <= as.POSIXct(d.end) &
+           sensor_MAC == TRCmac) 
+  
+  
+plot_TRC_delta(HC_averaged_stats, TRCmac, d.begin, d.end, "deltaheatcont.mean", "Heated - Control (delta)")
+plot_TRC_delta(HC_averaged_stats, TRCmac, d.begin, d.end, "deltaunheatcont.mean", "Unheated - Control (delta)")
+plot_TRC_delta(HC_averaged_stats, TRCmac, d.begin, d.end, "deltaheatunheat.mean", "Heated - Unheated (delta)")
+plot_TRC_delta(HC_averaged_stats, TRCmac, d.begin, d.end, "T4.mean", "T4 (Heated Pad)")
+plot_TRC_delta(HC_averaged_stats, TRCmac, d.begin, d.end, "T5.mean", "T5 (UnHeated Pad)")
+plot_TRC_delta(HC_averaged_stats, TRCmac, d.begin, d.end, "deltaheatunheatpad.mean", "Heated Pad - Unheated Pad (delta)")
+
+
+
+
+# there were 2 runs on level 3
+# ###### LEVEL 3, experiment 1
+LEVEL <- 3
+# change LEVEL to see plots of other TRC devices
+TRCmac <- filter(MACmap, level == LEVEL &
+                   role == "Warming Device Control")$MAC
+
+print(TRCmac)
+
+# first run of level 3
+d.begin <- "2023-11-29 00:00:00"
+d.end <- "2024-03-20 00:00:00"
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "deltaheatcont.mean", "Heated - Control (delta)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "deltaunheatcont.mean", "Unheated - Control (delta)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "deltaheatunheat.mean", "Heated - Unheated (delta)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "T4.mean", "T4 (Heated Pad)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "T5.mean", "T5 (UnHeated Pad)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "deltaheatunheatpad.mean", "Heated Pad - Unheated Pad (delta)")
+
+
+# ###### LEVEL 3, experiment 2
+LEVEL <- 3
+# change LEVEL to see plots of other TRC devices
+TRCmac <- filter(MACmap, level == LEVEL &
+                   role == "Warming Device Control")$MAC
+
+print(TRCmac)
+
+d.begin <- "2024-04-03 00:00:00"
+d.end <- "2024-05-08 00:00:00"
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "deltaheatcont.mean", "Heated - Control (delta)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "deltaunheatcont.mean", "Unheated - Control (delta)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "deltaheatunheat.mean", "Heated - Unheated (delta)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "T4.mean", "T4 (Heated Pad)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "T5.mean", "T5 (UnHeated Pad)")
+plot_TRC_delta(TRC_hour_stats, TRCmac, d.begin, d.end, "deltaheatunheatpad.mean", "Heated Pad - Unheated Pad (delta)")
+
+```
+```{r TRC_statistics_plot}
+
+plot_TRC_delta_clean <- function(averaged_stats, pmac, d.begin, d.end, xvar, yvar, title) {
+  
+  # title_begin <- format.Date(d.begin, "%D")
+  # title_end <- format.Date(d.end, "%D")
+  
+  # averaged_stats <- averaged_stats %>% 
+  #   filter(DL_datetime >= as.POSIXct(d.begin) & 
+  #            DL_datetime <= as.POSIXct(d.end) &
+  #            sensor_MAC == pmac) 
+  
+  # tmin <- round(min(averaged_stats[[deltavar]], na.rm = TRUE), 2)
+  # tmax <- round(max(averaged_stats[[deltavar]], na.rm = TRUE), 2)
+  # tmean <- round(mean(averaged_stats[[yvar]], na.rm = TRUE), 2)
+  # sd <- round(sd(averaged_stats[[yvar]], na.rm = TRUE), 2)
+  
+  # print(tmin)
+  
+  # title1 <- paste(labelvar, "on Level", averaged_stats$level, "Sensor Name:", averaged_stats$name, sep = " ")
+  # title2 <- paste(title_begin, "-", title_end)
+  # title3 <- paste("Minimum: ", tmin,  ", Maximum: ", tmax, ", Mean: ", tmean, ", SD: ", sd, sep = "")
+  # Ttitle <- paste(title1, title2, title3, sep = "\n")
+  # Ttitle <- paste("mean =", tmean, "sd =", sd, sep=" ")
+  
+  plotdiff <- ggplot(data = averaged_stats, 
+                     aes(x = averaged_stats[[xvar]], y = averaged_stats[[yvar]])) +
+    
+    geom_point(size = 0.2) +
+    # geom_smooth(formula = "4.809 + 0.9406 * averaged_stats[[yvar]]", se = TRUE, color = "blue") +
+    # geom_smooth(se = TRUE) +
+    geom_smooth(method='lm') +
+ stat_regline_equation(
+    aes(label =  paste(..eq.label.., ..adj.rr.label.., sep = "~~~~"))) + #,
+    # formula = formula
+  # ) +
+    
+    ggtitle(title) +
+    xlab("(C)") +
+    ylab("(C)") +
+    # scale_color_manual(name='',
+    #                    breaks=c('vs', 'RH Mean', 'T Mean', "Delta Mean"),
+    #                    values=c('RH Mean'='#619CFF', 'T Mean'='#F8766D', "Delta Mean"='#00BA38', 'vs'='darkorange')) +
+    # scale_x_datetime(date_breaks = "1 week",
+    #                  date_minor_breaks = "1 day",
+    #                  date_labels = "%b %d") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1)) #+
+   # coord_cartesian(ylim=c(22,40))
+  
+  return(plotdiff)
+}
+
+# plot_TRC_delta_clean(no_outliers, TRCmac, d.begin, d.end, "T3.mean", "T1.mean", "Heated vs Control")
+
+
+
+
+
+```
+
+```{r}
+plot_TC_predicted <- function(averaged_stats, pmac, d.begin, d.end, xvar, yvar, title) {
+  
+  plotdiff <- ggplot(data = averaged_stats, 
+                     aes(x = .data[[xvar]], y = .data[[yvar]])) +
+    
+    geom_point(size = 0.2) +
+    # geom_smooth(formula = "4.809 + 0.9406 * averaged_stats[[yvar]]", se = TRUE, color = "blue") +
+    # geom_smooth(se = TRUE) +
+    geom_smooth(method='lm') +
+ stat_regline_equation(
+    aes(label =  paste(..eq.label.., ..adj.rr.label.., sep = "~~~~"))) + #,
+    # formula = formula
+  # ) +
+    
+    ggtitle(title) +
+    xlab("(C)") +
+    ylab("(C)") +
+    # scale_color_manual(name='',
+    #                    breaks=c('vs', 'RH Mean', 'T Mean', "Delta Mean"),
+    #                    values=c('RH Mean'='#619CFF', 'T Mean'='#F8766D', "Delta Mean"='#00BA38', 'vs'='darkorange')) +
+    # scale_x_datetime(date_breaks = "1 week",
+    #                  date_minor_breaks = "1 day",
+    #                  date_labels = "%b %d") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1)) #+
+   # coord_cartesian(ylim=c(22,40))
+  
+  return(plotdiff)
+}
+```
+
+```{r level_2_heated}
+
+LEVEL <- 2
+# change LEVEL to see plots of other TRC devices
+TRCmac <- filter(MACmap, level == LEVEL &
+                   role == "Warming Device Control")$MAC
+
+print(TRCmac)
+
+d.begin <- "2023-11-17 00:00:00"
+d.end <- "2024-05-08 00:00:00"
+
+
+HC_averaged_stats <- TRC_hour_stats %>% 
+  filter(DL_datetime >= as.POSIXct(d.begin) & 
+           DL_datetime <= as.POSIXct(d.end) &
+           sensor_MAC == TRCmac) 
+
+
+hist(HC_averaged_stats$T1.mean, col = "steelblue")
+hist(HC_averaged_stats$T3.mean, col = "steelblue")
+
+# is it linear?
+scatter.smooth(HC_averaged_stats$T1.mean, HC_averaged_stats$T3.mean, main='Unheated mean vs Control mean')
+# outliers?
+boxplot(HC_averaged_stats$T3.mean, HC_averaged_stats$T1.mean)
+
+# OUTLIERS found in T1, fix using Interquartile range
+#find Q1, Q3, and interquartile range for values in column A
+Q1 <- quantile(HC_averaged_stats$T1.mean, .25, na.rm = TRUE)
+Q3 <- quantile(HC_averaged_stats$T1.mean, .75, na.rm = TRUE)
+IQR <- IQR(HC_averaged_stats$T1.mean, na.rm = TRUE)
+
+#only keep rows in dataframe that have values within 1.5*IQR of Q1 and Q3
+no_outliers <- subset(HC_averaged_stats, HC_averaged_stats$T1.mean> (Q1 - 1.5*IQR) &
+                        HC_averaged_stats$T1.mean< (Q3 + 1.5*IQR))
+
+hist(no_outliers$T1.mean, col = "steelblue")
+hist(no_outliers$T3.mean, col = "steelblue")
+
+# outliers?
+boxplot(no_outliers$T3.mean, no_outliers$T1.mean)
+
+# heated ~ control TC
+fit <- lm(T1.mean ~ T3.mean, data = no_outliers)
+summary(fit)
+
+# CHECK RESIDUALS
+#define residuals
+res <- resid(fit)
+
+#produce residual vs. fitted plot
+plot(fitted(fit), res)
+#add a horizontal line at 0 
+abline(0,0)
+
+# NORMAL???
+#create Q-Q plot for residuals
+qqnorm(res)
+#add a straight diagonal line to the plot
+qqline(res) 
+
+#Create density plot of residuals
+plot(density(res))
+hist(residuals(fit), col = "steelblue")
+
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "deltaunheatcont.mean", "Unheated - Control (delta)")
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "T1.mean", "T1.mean")
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "T3.mean", "T3.mean")
+plot_TRC_delta_clean(no_outliers, TRCmac, d.begin, d.end, "T3.mean", "T1.mean", "Heated vs Control")
+
+#define new data frame of values to predict
+# newdata = data.frame(T3.mean=c(15, 20, 25, 30, 35, 40, 45))
+#use model to predict points for all three players
+# newdata$t3pred <- predict(fit, no_outliers)
+# newdata$t3diff <- newdata$t3pred - newdata$T3.mean
+# mean(newdata$t3diff)
+
+# Paired Samples t-test: Assumptions
+# 
+# For the results of a paired samples t-test to be valid, the following assumptions should be met:
+# 
+#     The participants should be selected randomly from the population.
+#     The differences between the pairs should be approximately normally distributed.
+#     There should be no extreme outliers in the differences.
+
+
+# t.test(no_outliers$T2.mean, no_outliers$T3.mean,
+#        data = no_outliers,
+#        paired = TRUE)
+
+# A paired samples t-test is a statistical test that compares the means of 
+# two samples when each observation in one sample can be paired with an 
+# observation in the other sample.
+# 
+# μd is the mean difference.
+# H0: μd = 0 
+# 
+# Ha: μd ≠ 0 (two-tailed)
+# Ha: μd > 0 (one-tailed)
+# Ha: μd < 0 (one-tailed)
+
+t.test(no_outliers$T1.mean, no_outliers$T3.mean,
+       data = no_outliers,
+       alternative = "two.sided",
+       paired = TRUE)
+
+
+```
+
+```{r 2_unheated}
+
+LEVEL <- 2
+# change LEVEL to see plots of other TRC devices
+TRCmac <- filter(MACmap, level == LEVEL &
+                   role == "Warming Device Control")$MAC
+
+print(TRCmac)
+
+d.begin <- "2023-11-17 00:00:00"
+d.end <- "2024-05-08 00:00:00"
+
+
+HC_averaged_stats <- TRC_hour_stats %>% 
+  filter(DL_datetime >= as.POSIXct(d.begin) & 
+           DL_datetime <= as.POSIXct(d.end) &
+           sensor_MAC == TRCmac) 
+
+
+hist(HC_averaged_stats$T2.mean, col = "steelblue")
+hist(HC_averaged_stats$T3.mean, col = "steelblue")
+
+# is it linear?
+scatter.smooth(HC_averaged_stats$T2.mean, HC_averaged_stats$T3.mean, main='Unheated mean vs Control mean')
+# outliers?
+boxplot(HC_averaged_stats$T3.mean, HC_averaged_stats$T2.mean)
+
+# OUTLIERS found in T2, fix using Interquartile range
+#find Q1, Q3, and interquartile range for values in column A
+Q1 <- quantile(HC_averaged_stats$T2.mean, .25, na.rm = TRUE)
+Q3 <- quantile(HC_averaged_stats$T2.mean, .75, na.rm = TRUE)
+IQR <- IQR(HC_averaged_stats$T2.mean, na.rm = TRUE)
+
+#only keep rows in dataframe that have values within 1.5*IQR of Q1 and Q3
+no_outliers <- subset(HC_averaged_stats, HC_averaged_stats$T2.mean> (Q1 - 1.5*IQR) &
+                        HC_averaged_stats$T2.mean< (Q3 + 1.5*IQR))
+
+hist(no_outliers$T2.mean, col = "steelblue")
+hist(no_outliers$T3.mean, col = "steelblue")
+
+# outliers?
+boxplot(no_outliers$T3.mean, no_outliers$T2.mean)
+
+# heated ~ control TC
+fit <- lm(T2.mean ~ T3.mean, data = no_outliers)
+summary(fit)
+
+# CHECK RESIDUALS
+#define residuals
+res <- resid(fit)
+
+#produce residual vs. fitted plot
+plot(fitted(fit), res)
+#add a horizontal line at 0 
+abline(0,0)
+
+# NORMAL???
+#create Q-Q plot for residuals
+qqnorm(res)
+#add a straight diagonal line to the plot
+qqline(res) 
+
+#Create density plot of residuals
+plot(density(res))
+hist(residuals(fit), col = "steelblue")
+
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "deltaunheatcont.mean", "Unheated - Control (delta)")
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "T2.mean", "T2.mean")
+# plot_TRC_delta(no_outliers, TRCmac, d.begin, d.end, "T3.mean", "T3.mean")
+plot_TRC_delta_clean(no_outliers, TRCmac, d.begin, d.end, "T3.mean", "T2.mean", "Unheated vs Control")
+
+#define new data frame of values to predict
+newdata = data.frame(T3.mean=no_outliers$T3.mean)
+newdata$t3pred <- predict(fit, newdata)
+plot_TC_predicted(newdata, TRCmac, d.begin, d.end, "T3.mean", "t3pred", "Heated Prediction")
+
+newdata$org <- no_outliers$T1.mean  - no_outliers$T3.mean
+
+plot_TC_predicted(newdata, TRCmac, d.begin, d.end, "T3.mean", "org", "Heated Prediction")
+
+newdata$t3diff <- newdata$t3pred
+mean(newdata$t3diff)
+sd(newdata$t3diff)
+
+t.test(no_outliers$T2.mean, no_outliers$T3.mean,
+       data = no_outliers,
+       alternative = "two.sided",
+       paired = TRUE)
+
+```
+

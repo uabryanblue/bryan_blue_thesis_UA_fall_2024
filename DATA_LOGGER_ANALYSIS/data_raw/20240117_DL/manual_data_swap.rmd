@@ -1,0 +1,19 @@
+# Manual Data Swap
+
+Bryan Blue, 20240807
+
+This data set was from when I could not be hired as a student worker and unable to collect data due to the University of Arizona financial crisis of 2023 - ???
+
+The hiring freeze and losing my RA in Fall 2023 kept me from working at Biosphere 2. As a result, no LI-COR data were collected during that time.
+
+TRC 48E7295348F8 and associated Climate stopped working on 2024-01-07 01:30:10, data was lost due to an assumed power outage.\
+Climate sensor 48E72952E8D2, which received power from TRC 48E7295348F8, also stopped working on 2024-01-07 01:30:12, causing data loss.
+
+The other TRC and Climate data was collected through \~2024-01-17 07:30
+
+DL1 data was not correct, DL2 data needed to be used.
+
+Modifications:\
+1. DL1 folder renamed to DL1_bad\
+2. DL2 copy/paste created DL2 - Copy\
+3. DL2 renamed to DL1

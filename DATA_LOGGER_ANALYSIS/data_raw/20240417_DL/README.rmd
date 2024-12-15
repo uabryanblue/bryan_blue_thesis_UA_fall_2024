@@ -1,0 +1,2 @@
+# DL1 microSD card not erased
+DL1 data contains previous data as the microSC card was not erased. These data were used for the analysis as the R code removed duplication of any data.

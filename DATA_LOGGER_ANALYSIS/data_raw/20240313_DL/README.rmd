@@ -1,0 +1,5 @@
+# data duplication DL2
+DL2 was not erased from the previous week, but it had this time periods data added to the end.  
+These data were not used, but the R code removes duplication after data is added and it would not have caused data problems.  
+
+DL1 was fine and that data was used.

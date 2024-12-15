@@ -1,0 +1,15 @@
+MAC,role,name,level,notes
+485519DF2986,data logger,DL1,1,TIMESERVER
+8CAAB54D7F18,data logger,DL2,1,spare
+C45BBEE4FE08,data logger,DL3,0,Prototype
+C45BBEE50352,data logger,DL5,0,spare
+c45bbee50035,Climate Sensor,THP1,0,calibrated
+48E72953672E,Climate Sensor,THP2,2,calibrated
+485519DF2848,Climate Sensor,THP3,3,"unused, calibrated"
+48E72952E8D2,Climate Sensor,THP4,1,calibrated
+ecfabccbabce,Climate Sensor,THP5,0,"spare, uncalibrated"
+c45bbee4fd71,Warming Device Control,TRC1,0,Prototype
+485519df8e93,Warming Device Control,TRC2,0,unused
+48E7295552AD,Warming Device Control,TRC3,2,
+48E729537E2C,Warming Device Control,TRC4,3,
+48E7295348F8,Warming Device Control,TRC5,1,

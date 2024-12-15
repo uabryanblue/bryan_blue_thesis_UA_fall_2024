@@ -1,0 +1,869 @@
+---
+title: "Experiment Sensor Visualization"
+author: "Bryan Blue"
+date: "Last Generated: `r Sys.Date()`"
+
+execute:
+  echo: false
+format: 
+  html:
+    code-fold: true
+    fig-width: 8
+    fig-height: 6
+  pdf:
+    fig-width: 8
+    fig-height: 6
+---
+
+```{r init}
+#| echo: false
+#| warning: false
+#| include: false
+
+# https://www.regextester.com/ for regex checking
+
+# advanced conflict resolution
+# https://conflicted.r-lib.org/
+# install.packages("devtools")
+library(conflicted)
+
+library(here)
+conflicts_prefer(here::here)
+
+library(readr)
+library(purrr)
+library(dplyr)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::arrange)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::summarize)
+conflicts_prefer(dplyr::mutate)
+
+library(lubridate)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+
+source("DL_experiment_logs_functions.R")
+
+# constants to data paths
+DATARAW <- "data_raw" # TREAT READ ONLY. Raw LICOR data logs.
+DATACLEAN <- "data_clean" # files generated from data_raw through data wrangling
+DATAUSER <- "data_user" # data the user manually enters or manipulates
+FIGSTORAGE <- "figures" # the relative path to store ggplots
+LEVEL <- 2
+
+here()
+```
+
+**The experiment started on November 22, 2023.**
+
+## Load Data Logger Data
+
+**01_wrangle_DL_logs.qmd needs run before this script.**\
+This generates the files in `r DATACLEAN` which are already filtered and calibrated.
+
+### Hardware Inventory
+
+Use MAC address to reference the function of the microprocessor. It appears in logs and should be considered the primary key to the data.
+
+| ID  | DATE      | DEVICE             | FUNCTION               | MAC          | DESCRIPTION      | Level |
+|-----------|-----------|-----------|-----------|-----------|-----------|-----------|
+| M01 | 9/24/2023 | ESP8266 NodeMCU V2 | Data Logger            | 485519DF2986 | DL1 - TIMESERVER | 1     |
+| M02 | 9/24/2023 | ESP8266 NodeMCU V2 | Data Logger            | 8CAAB54D7F18 | DL2              | 1     |
+| M12 | 9/25/2023 | ESP8266 NodeMCU V2 | Climate Sensor         | 48E72952E8D2 | THP4             | 1     |
+| M10 | 9/25/2023 | ESP8266 NodeMCU V2 | Warming Device Control | 48E7295348F8 | TRC              | 1     |
+| M05 | 9/25/2033 | ESP8266 NodeMCU V2 | Climate Sensor         | 48E72953672E | THP2             | 2     |
+| M08 | 9/25/2023 | ESP8266 NodeMCU V2 | Warming Device Control | 48E7295552AD | TRC              | 2     |
+| M04 | 9/25/2023 | ESP8266 NodeMCU V2 | Climate Sensor         | 485519DF2848 | THP3             | 3     |
+| M09 | 9/24/2023 | ESP8266 NodeMCU V2 | Warming Device Control | 48E729537E2C | TRC              | 3     |
+
+: Hardware Inventory - see "device_mapping.csv" in the folder `r DATACLEAN` for the latest values.
+
+### TC Information
+
+Each 735nm TRC module has support for five thermocouples (TC). Each port is numbered 1 through 5.\
+They represent:
+
+| TC1       | TC2     | TC3       | TC4  | TC5      |
+|-----------|---------|-----------|------|----------|
+| Treatment | Control | Reference | Heat | Non-Heat |
+
+: 735nm Thermocouple Designations - each TC has a unique name and two point calibration applied to it. These are grouped into five, based on the values in the 735nm TRC configuration. See "conf.py" in the "735nm_TRC" code for the latest groupings.
+
+```{r load_cleaned_logs}
+#| echo: false
+#| warning: false
+
+# 01_wrangle_DL_logs.qmd MUST be run before this will work
+# run it any time new data is added
+
+# At this point all data has been wrangled and cleaned
+climate_data <- read_clean_climate_data(here(DATACLEAN, "cleaned_climate_data.csv"))
+climate_hour_data <- read_climate_hour_data(here(DATACLEAN, "climate_hour_stats.csv"))
+
+TRC_data <- read_clean_TRC_data(here(DATACLEAN, "cleaned_TRC_data.csv"))
+calibrate_TRC_data <- read_TC_calibration_data(here(DATACLEAN, "calibrated_TRC_data.csv"))
+TRC_hour_stats <- read_TC_hour_data(here(DATACLEAN, "TRC_hour_stats.csv"))
+
+# MAC address of esp8266 to function
+MACmap <- read_device_mapping_data(here(DATARAW, "device_mapping.csv"))
+
+```
+
+```{r plot_functions}
+#| echo: false
+#| warning: false
+
+plot_MAC_date_range <- function(df, plotvar, plcolor, title = "") {
+  
+  plotT <- ggplot() +
+    # geom_point(data = final_data, 
+    geom_line(data = df, 
+              aes(x = DL_datetime, y = .data[[plotvar]], color = plotvar), 
+              size = 1) +
+    ggtitle(title) +
+    xlab("Day of Month") +
+    ylab(plotvar) +
+    # scale_color_manual(name='MAC',
+    #                    breaks=c('Treatment', 'Control', 'Reference'),
+    #                    values=c('Treatment'='#F8766D', 'Control'='#619CFF', 'Reference'='#00BA38'))+
+    # scale_y_continuous(limits=c(0.0, 0.2), breaks=c(0, 0.1, 0.2, 0.5))   +
+    scale_x_datetime(date_labels = ("%d"),
+                     date_breaks = "days", 
+                     expand = expansion(0)) +
+    theme(axis.text.x=element_text(angle = 60, hjust = 1))
+  
+  return(plotT)
+}
+
+# TESTING start --------------------
+# pmac <- "48E72953672E"
+# pdata <- MACmap %>% 
+#   filter(MAC == pmac) %>% 
+#   select(role, name, level)
+# 
+# d.begin <- "2023-12-01 00:00:00"
+# d.end <-"2024-01-01 00:00:00"
+# title_begin <- format.Date(d.begin, "%D")
+# title_end <- format.Date(d.end, "%D")
+# 
+# title1 <- paste("Temperature for", pdata$role, "level", pdata$level, sep = " ")
+# Ttitle <- paste(title1, "\n", title_begin, "-", title_end, sep = " ")
+# 
+# p1 <- plot_MAC_date_range(climate_dl_data %>% 
+#                            filter(DL_datetime >= as.POSIXct(d.begin) & 
+#                                     DL_datetime <= as.POSIXct(d.end) &
+#                                     sensor_MAC == pmac), "temp_C", "#619CFF", Ttitle)
+# 
+# p1
+
+# TESTING stop --------------------
+
+
+plot_climate_temperature <- function(pmac, d.begin, d.end) {
+  
+  pdata <- MACmap %>% 
+    filter(MAC == pmac) %>% 
+    select(role, name, level)
+  
+  title_begin <- format.Date(d.begin, "%D")
+  title_end <- format.Date(d.end, "%D")
+  
+  cl_data <- climate_data %>% 
+    filter(DL_datetime >= as.POSIXct(d.begin) & 
+             DL_datetime <= as.POSIXct(d.end) &
+             sensor_MAC == pmac)
+  
+  cl_min <- round(min(cl_data$temp_C, na.rm = TRUE), 1)
+  cl_max <- round(max(cl_data$temp_C, na.rm = TRUE), 1)
+  cl_mean <- round(mean(cl_data$temp_C, na.rm = TRUE), 1)
+  cl_sd <- round(sd(cl_data$temp_C, na.rm = TRUE), 1)
+
+  title1 <- paste("Temperature for", pdata$role, "level", pdata$level, sep = " ")
+  title2 <- paste(title1, "\n", title_begin, "-", title_end, sep = " ")
+  Ttitle <- paste(title2, "\nMin:", cl_min, "Max:", cl_max, "Mean:", cl_mean, sep = " ")
+  
+  
+  p0 <- plot_MAC_date_range(cl_data, "temp_C", "#619CFF", Ttitle)
+  return(p0)
+}
+
+```
+
+```{r climate_graph_report_MAC}
+#| echo: false
+#| warning: false
+
+# GLOBAL SENSOR IDENTIFICATION FOR MONTLY GRAPHS
+# common values for the following monthly graphs
+# to run monthly graphs on a different sensor, change the MAC address
+# pmac <- "48E72953672E" # level 2 aspriated climate sensor
+# pmac <- "485519DF2848" # level 3 aspriated climate sensor
+pmac <- MACmap %>% filter(level == LEVEL & role == "Climate Sensor") %>%
+  select(MAC)
+pmac <- as.character(pmac$MAC)
+```
+
+# Climate Data
+
+Data from the experimental aspirated temperature, humidity, and pressure sensor.
+
+## Level 2 Installation
+
+This plant is located approximately 7 m above the tropical rain forest floor. It grows on the South side on a terrace.\
+Monthly graphs are shown below.
+
+Graphs are created using the MAC address for the climate sensor. Change the MAC address to the climate sensor of interest to see it's data.\
+MAC: `r pmac`
+
+### November 2023 Temperature Data
+
+**The experiment started on November 22, 2023.**\
+The power cord was unplugged on November 22, 2023 through November 29, 2023. Unknown who or why this happened.
+
+```{r november_2023_climate_graphs}
+#| echo: false
+#| warning: false
+
+# Experiment 2 entire run time
+d.begin <- "2023-11-17 00:00:00"
+d.end <-"2024-05-08 00:00:00"
+
+p <- plot_climate_temperature(pmac, d.begin, d.end)
+p
+```
+
+### December 2023 Temperature Data
+
+The sensor stopped working on December 6, 2023 and had to be rebooted on December 8, 2023. Unknown why it stopped responding.
+
+```{r december_2023_climate_graphs}
+#| echo: false
+#| warning: false
+
+d.begin <- "2023-12-01 00:00:00"
+d.end <-"2023-12-31 00:00:00"
+
+p <- plot_climate_temperature(pmac, d.begin, d.end)
+p
+
+```
+
+### January 2024 Temperature Data
+
+```{r January_2024_climate_graphs}
+#| echo: false
+#| warning: false
+
+d.begin <- "2024-01-01 00:00:00"
+d.end <-"2024-01-31 00:00:00"
+
+p <- plot_climate_temperature(pmac, d.begin, d.end)
+p
+```
+
+### February 2024 Temperature Data
+
+```{r February_2024_climate_graphs}
+#| echo: false
+#| warning: false
+
+d.begin <- "2024-02-01 00:00:00"
+d.end <-"2024-02-29 00:00:00"
+
+p <- plot_climate_temperature(pmac, d.begin, d.end)
+p
+```
+
+### March 2024 Temperature Data
+
+```{r march_2024_climate_graphs}
+#| echo: false
+#| warning: false
+
+d.begin <- "2024-03-01 00:00:00"
+d.end <-"2024-03-31 00:00:00"
+
+p <- plot_climate_temperature(pmac, d.begin, d.end)
+p
+
+# p1/p2/p3/p4
+```
+
+### April 2024 Temperature Data
+
+```{r april_2024_climate_graphs}
+#| echo: false
+#| warning: false
+
+d.begin <- "2024-04-01 00:00:00"
+d.end <-"2024-04-30 00:00:00"
+
+p <- plot_climate_temperature(pmac, d.begin, d.end)
+p
+
+# p1/p2/p3/p4
+```
+
+```{r warming_intit}
+#| echo: false
+#| warning: false
+
+# change LEVEL to see plots of other TRC devices
+pmac <- MACmap %>% filter(level == LEVEL & role == "Warming Device Control") %>%
+  select(MAC)
+pmac <- as.character(pmac$MAC)
+
+pdata <- MACmap %>% 
+  filter(MAC == pmac) %>% 
+  select(role, name, level)
+```
+
+# Experimental Warming Device
+
+**The experiment started on November 22, 2023.**
+
+Data from the warming device's five thermocouples placed on:\
+warmed leaf and it's controlled warming pad\
+non-warmed leaf with the warming pad that is not controlled\
+reference leaf with nothing attached other than the thermocouple
+
+## Level 2 Installation
+
+This plant is located approximately 7 m above the tropical rain forest floor. It grows on the South side of the mountain on a terrace.\
+Monthly graphs are shown below.\
+MAC: `r pmac`
+
+```{r plot_TRC}
+#| echo: false
+#| warning: false
+
+plot_treatment_vs_reference <- function(pmac, d.begin, d.end) {
+  
+  title_begin <- format.Date(d.begin, "%D")
+  title_end <- format.Date(d.end, "%D")
+  
+  Treatment <- TRC_data %>% 
+    filter(DL_datetime >= as.POSIXct(d.begin) & 
+             DL_datetime <= as.POSIXct(d.end) &
+             sensor_MAC == pmac) %>%
+    select(sensor_MAC, DL_datetime, T1)
+  
+  Reference <- TRC_data %>% 
+    filter(DL_datetime >= as.POSIXct(d.begin) & 
+             DL_datetime <= as.POSIXct(d.end) &
+             sensor_MAC == pmac) %>%
+    select(T3)
+  
+  tdiff <- cbind(Treatment, Reference)
+  tdiff$diff <- tdiff$T1 - tdiff$T3
+  
+  tdiff_mean <- round(mean(tdiff$diff, na.rm = TRUE), 1)
+  tdiff_sd <- round(sd(tdiff$diff, na.rm = TRUE), 1)
+  tdiff_median <- round(median(tdiff$diff, na.rm = TRUE), 1)
+  
+  title1 <- paste("Temperature Difference between Treatment and Reference for level", pdata$level, sep = " ")
+  title2 <- paste(title_begin, "-", title_end)
+  title3 <- paste("Mean: ", tdiff_mean,  ", Median: ", tdiff_median, ", SD: ", tdiff_sd, sep = "")
+  Ttitle <- paste(title1, title2, title3, sep = "\n")
+  
+  plotdiff <- ggplot() +
+    geom_line(data = tdiff, 
+              aes(x = DL_datetime, y = diff, color = "Delta T"), 
+              size = 0.7) +
+    geom_line(data = tdiff, 
+              aes(x = DL_datetime, y = T1, color = "Treatment"), 
+              size = 0.7) +
+    geom_line(data = tdiff, 
+              aes(x = DL_datetime, y = T3, color = "Reference"), 
+              size = 0.7) +
+    ggtitle(Ttitle) +
+    xlab("Day of Month") +
+    ylab("Temperature Difference (C)") +
+    scale_color_manual(name='Thermocouple',
+                       breaks=c('Delta T', 'Treatment', 'Reference'),
+                       values=c('Delta T'='#619CFF', 'Treatment'='#F8766D', 'Reference'='#00BA38'))+
+    # scale_y_continuous(limits=c(0.0, 45.0), breaks=c(0, 5, 10, 15, 20, 25, 30, 35, 40))   +
+    scale_x_datetime(date_labels = ("%d"),
+                     date_breaks = "days", 
+                     expand = expansion(0)) +
+    theme(axis.text.x=element_text(angle = 60, hjust = 1))
+  
+  return(plotdiff)
+  
+}
+
+# TESTING begin -------------
+# change LEVEL to see plots of other TRC devices
+# pmac <- MACmap %>% filter(level == LEVEL & role == "Warming Device Control") %>%
+#   select(MAC)
+# pmac <- as.character(pmac$MAC)
+# # 
+# pdata <- MACmap %>% 
+#   filter(MAC == pmac) %>% 
+#   select(role, name, level)
+# 
+# d.begin <- "2024-03-01 00:00:00"
+# d.end <- "2024-04-30 00:00:00"
+# 
+# plotdiff <- plot_treatment_vs_reference(pmac, d.begin, d.end)
+# plotdiff
+# TESTING end -------------
+
+```
+
+
+
+
+### Experiment 2 DeltatT Data
+
+```{r Experiment_2_deltaT_graphs}
+#| echo: false
+#| warning: false
+
+d.begin <- "2023-11-22 00:00:00"
+d.end <- "2024-05-01 00:00:00"
+
+plotdiff <- plot_treatment_vs_reference(pmac, d.begin, d.end)
+plotdiff
+
+plot_raw(pmac, d.begin, d.end)
+# this needs modified so the filename is dynamic
+# ggsave(here("figures", "deltaT_lvl2_november_2023.jpg"), plot = last_plot(), width = 8, height = 6)
+
+
+```
+
+### November 2023 DeltaT Data
+
+**The experiment started on November 22, 2023.**
+
+```{r November_2023_deltaT_graphs}
+#| echo: false
+#| warning: false
+
+d.begin <- "2023-11-22 00:00:00"
+d.end <- "2023-11-30 00:00:00"
+
+plotdiff <- plot_treatment_vs_reference(pmac, d.begin, d.end)
+plotdiff
+
+# this needs modified so the filename is dynamic
+# ggsave(here("figures", "deltaT_lvl2_november_2023.jpg"), plot = last_plot(), width = 8, height = 6)
+
+
+```
+
+### December 2023 DeltaT Data
+
+```{r December_2023_deltaT_graphs}
+#| echo: false
+#| warning: false
+
+d.begin <- "2023-12-01 00:00:00"
+d.end <- "2023-12-31 00:00:00"
+
+plotdiff <- plot_treatment_vs_reference(pmac, d.begin, d.end)
+plotdiff
+
+# this needs modified so the filename is dynamic
+# ggsave(here("figures", "deltaT_lvl2_december_2023.jpg"), plot = last_plot(), width = 8, height = 6)
+
+```
+
+### January 2024 DeltaT Data
+
+```{r January_2024_deltaT_graphs}
+#| echo: false
+#| warning: false
+
+d.begin <- "2024-01-01 00:00:00"
+d.end <- "2024-01-31 00:00:00"
+
+plotdiff <- plot_treatment_vs_reference(pmac, d.begin, d.end)
+plotdiff
+
+# ggsave(here("figures", "deltaT_lvl2_january_2024.jpg"), plot = last_plot(), width = 8, height = 6)
+
+```
+
+### February 2024 DeltaT Data
+
+```{r February_2024_deltaT_graphs}
+#| echo: false
+#| warning: false
+
+d.begin <- "2024-02-01 00:00:00"
+d.end <- "2024-02-29 00:00:00"
+
+plotdiff <- plot_treatment_vs_reference(pmac, d.begin, d.end)
+plotdiff
+
+# ggsave(here("figures", "deltaT_lvl2_february_2024.jpg"), plot = last_plot(), width = 8, height = 6)
+
+```
+
+### March 2024 DeltaT Data
+
+```{r March_2024_deltaT_graphs}
+#| echo: false
+#| warning: false
+
+d.begin <- "2024-03-01 00:00:00"
+d.end <- "2024-03-31 00:00:00"
+
+plotdiff <- plot_treatment_vs_reference(pmac, d.begin, d.end)
+plotdiff
+
+# ggsave(here("figures", "deltaT_lvl2_march_2024.jpg"), plot = last_plot(), width = 8, height = 6)
+
+```
+
+### April 2024 DeltaT Data
+
+```{r April_2024_deltaT_graphs}
+#| echo: false
+#| warning: false
+
+d.begin <- "2024-04-01 00:00:00"
+d.end <- "2024-04-30 00:00:00"
+
+plotdiff <- plot_treatment_vs_reference(pmac, d.begin, d.end)
+plotdiff
+
+# ggsave(here("figures", "deltaT_lvl2_march_2024.jpg"), plot = last_plot(), width = 8, height = 6)
+
+```
+
+# Leaf Warming All Data
+
+**The experiment started on November 22, 2023.**
+
+Plots and information on all of the thermocouples.
+
+The software has a safety cutoff of 50 C for the heated pad which looks to have been reached.
+
+```{r boxplot_all_TC}
+#| echo: false
+#| warning: false
+
+TC_boxplot <- function(TRC_data, LEVEL, d.begin, d.end, title) {
+
+# change LEVEL to see plots of other TRC devices
+pmac <- MACmap %>% filter(level == LEVEL & role == "Warming Device Control") %>%
+  select(MAC)
+pmac <- as.character(pmac$MAC)
+
+pdata <- MACmap %>% 
+  filter(MAC == pmac) %>% 
+  select(role, name, level)
+
+TCdata <- TRC_data %>% 
+  filter(DL_datetime >= as.POSIXct(d.begin) & 
+           DL_datetime <= as.POSIXct(d.end) &
+           sensor_MAC == pmac) 
+
+# the TC names need to be in one row for this plot
+long <- TCdata %>% 
+  pivot_longer(
+    cols = starts_with("T") , 
+    names_to = "Thermocouple",
+    # values_to = "value"
+  )
+
+title_begin <- format.Date(d.begin, "%D")
+title_end <- format.Date(d.end, "%D")
+title1 <- paste("Thermocouple Values for level", pdata$level, sep = " ")
+Ttitle <- paste(title1, "\n", title_begin, "-", title_end, sep = " ")
+
+p <- ggplot(data = long, 
+               aes(x = Thermocouple , y = value, color = Thermocouple)) +
+  geom_boxplot(staplewidth = 1,
+               outlier.color = "black", outlier.size = 0.75) +
+  scale_colour_manual(
+    values = c('#F8766D', '#619CFF', '#00BA38', 'red', 'blue'),
+    breaks=c('T1', 'T2', 'T3', 'T4', 'T5'),
+    labels = c('Heated (T1)', 'Unheated (T2)', "Control (T3)", "Heated Pad (T4)", "Non-Heated Pad (T5)"))+
+  scale_y_continuous(limits=c(20.0, 50.0), breaks=c(20, 30, 40, 50)) +
+  ggtitle(Ttitle) +
+  xlab("TC Number") +
+  ylab("Temperature (C)")
+
+  return(p)
+
+}
+
+```
+
+```{r}
+
+LEVEL <- 2
+d.begin <- "2023-11-17 00:00:00"
+d.end <-"2024-05-08 00:00:00"
+title_begin <- format.Date(d.begin, "%D")
+title_end <- format.Date(d.end, "%D")
+p <- TC_boxplot(TRC_data, LEVEL, d.begin, d.end, title)
+plot_name <- paste("TC_boxplot_lvl", LEVEL, "_", substr(d.begin, 1, 10), "-", substr(d.end, 1, 10), ".jpg", sep = '')
+ggsave(here(FIGSTORAGE, plot_name), plot = last_plot(), width = 8, height = 6)
+p
+
+# level 3, run 1
+LEVEL <- 3
+d.begin <- "2023-12-08 00:00:00"
+d.end <-"2024-04-24 00:00:00"
+title_begin <- format.Date(d.begin, "%D")
+title_end <- format.Date(d.end, "%D")
+p <- TC_boxplot(TRC_data, LEVEL, d.begin, d.end, title)
+plot_name <- paste("TC_boxplot_lvl", LEVEL, "_", substr(d.begin, 1, 10), "-", substr(d.end, 1, 10), ".jpg", sep = '')
+ggsave(here(FIGSTORAGE, plot_name), plot = last_plot(), width = 8, height = 6)
+# ggsave(here("figures", "TC_boxplot_lvl3_nov_1-2023_mar_3-2024.jpg"), plot = last_plot(), width = 8, height = 6)
+p
+
+
+```
+
+```{r trc_trend_plots}
+
+#| echo: false
+#| warning: false
+
+plot_raw <- function(pmac, d.begin, d.end, LEVEL) {
+  
+  # title_begin <- format.Date(d.begin, "%D")
+  # title_end <- format.Date(d.end, "%D")
+  #remove all rows with a missing value in either the first or third column
+
+  TRC_data <- TRC_data %>% drop_na(c(T1, T2, T3))
+  
+  Treatment <- TRC_data %>% 
+    filter(DL_datetime >= as.POSIXct(d.begin) & 
+             DL_datetime <= as.POSIXct(d.end) &
+             sensor_MAC == pmac) %>%
+    select(sensor_MAC, DL_datetime, T1)
+  
+  Reference <- TRC_data %>% 
+    filter(DL_datetime >= as.POSIXct(d.begin) & 
+             DL_datetime <= as.POSIXct(d.end) &
+             sensor_MAC == pmac) %>%
+    select(T3)
+  
+    
+  Unheated <- TRC_data %>% 
+    filter(DL_datetime >= as.POSIXct(d.begin) & 
+             DL_datetime <= as.POSIXct(d.end) &
+             sensor_MAC == pmac) %>%
+    select(T2)
+  
+  tdiff <- cbind(Treatment, Reference)
+  tdiff <- cbind(tdiff, Unheated)
+    
+  # tdiff$diff <- tdiff$T1 - tdiff$T3
+    
+  if (LEVEL == "1") {
+    experiment <- "3-1" 
+  } else if (LEVEL == "3") {
+    experiment <- "3-2" 
+  } else {
+    experiment <- "2"
+  }
+  
+  print("======================================================")
+  print(paste('Experiment:', experiment, sep = ' '))
+  
+  tdiff1_mean <- round(mean(tdiff$T1, na.rm = TRUE), 1)
+  tdiff1_sd <- round(sd(tdiff$T1, na.rm = TRUE), 1)
+  print(paste("HEATED LEAF (T1): ","mean:", tdiff1_mean, 'sd:', tdiff1_sd, sep=' '))
+  
+  tdiff2_mean <- round(mean(tdiff$T2, na.rm = TRUE), 1)
+  tdiff2_sd <- round(sd(tdiff$T2, na.rm = TRUE), 1)
+  print(paste("UNHEATED LEAF (T2): ","mean:", tdiff2_mean, 'sd:', tdiff2_sd, sep=' '))
+  
+  tdiff3_mean <- round(mean(tdiff$T3, na.rm = TRUE), 1)
+  tdiff3_sd <- round(sd(tdiff$T3, na.rm = TRUE), 1)
+  print(paste("CONTROL LEAF (T3): ","mean:", tdiff3_mean, 'sd:', tdiff3_sd, sep=' '))
+  print("======================================================")
+
+  
+  print("ANOVA Heated vs. Unheated")
+  model <- aov(tdiff$T1~tdiff$T2,data=tdiff)
+  summary.aov(model)
+ 
+  print("======================================================")
+  print(paste('Experiment:', experiment, sep = ' '))
+
+  print("paired t-test")
+  
+  #perform paired samples t-test
+  print("HEATED vs. CONTROL LEAF (T1 vs T3)")
+  print(t.test(x = tdiff$T1, y = tdiff$T3, paired = TRUE)  )
+  
+  print("UNHEATED vs. CONTROL LEAF (T2 vs T3)")
+  print(t.test(x = tdiff$T2, y = tdiff$T3, paired = TRUE)  )
+  
+  print("HEATED vs. UNHEATED LEAF (T1 vs T2)")
+  print(t.test(x = tdiff$T1, y = tdiff$T2, paired = TRUE)  )
+  print("======================================================")
+  
+#   mean(HC_averaged_stats$T1.mean, na.rm = TRUE)
+# sd(HC_averaged_stats$T1.mean, na.rm = TRUE)
+# mean(HC_averaged_stats$T3.mean, na.rm = TRUE)
+# sd(HC_averaged_stats$T3.mean, na.rm = TRUE)
+# 
+# t.test(HC_averaged_stats$T1.mean, HC_averaged_stats$T3.mean,
+#        data = HC_averaged_stats,
+#        alternative = "two.sided",
+#        paired = TRUE)
+
+  
+  
+  Ttitle <- paste("Leaf Temperatures For Experiment", experiment, sep = " ")
+  # title2 <- paste(title_begin, "-", title_end)
+  # # title3 <- paste("Mean: ", tdiff_mean,  ", Median: ", tdiff_median, ", SD: ", tdiff_sd, sep = "")
+  # Ttitle <- paste(title1, title2, title3, sep = "\n")
+  
+  scaleFactor <- max(tdiff$T1) / max(tdiff$T3)
+  
+  plotdiff <- ggplot(data = tdiff, aes(x = DL_datetime)) +
+    # geom_line(data = tdiff, 
+    #           aes(x = DL_datetime, y = T1, color = "Heated"), 
+    #           size = 0.7) +
+    # geom_point(data = tdiff, 
+    #           aes(x = DL_datetime, y = T2, color = "Unheated"), 
+    #           size = 0.7) +
+    geom_smooth(aes(y = T1, color='Heated'), se = FALSE, linewidth = 1) +
+    geom_smooth(aes(y = T2, color='Unheated'), se = FALSE, linewidth = 1) +
+    geom_smooth(aes(y = T3, color='Control'), se = FALSE, linewidth = 1) +
+    
+    # geom_smooth(aes(y = T1 - T3), se = FALSE, colour = "darkorange", linewidth = 1) +
+    # geom_line(data = tdiff, 
+    #           aes(x = DL_datetime, y = T3, color = "Control"), 
+    #           size = 0.7) +
+
+    ggtitle(Ttitle) +
+    xlab("Week Of Year") +
+    ylab("Leaf Temperature(C)") +
+    scale_color_manual(name='Leaf',
+                       breaks=c('Heated', 'Unheated', 'Control'),
+                       values=c('Heated'='#F8766D', 'Unheated'='#619CFF', 'Control'='#00BA38'))+
+    # # scale_y_continuous(limits=c(0.0, 45.0), breaks=c(0, 5, 10, 15, 20, 25, 30, 35, 40))   +
+    
+    
+
+
+    # THIS IS USED TO HAVE TWO Y SCALES
+    # ggplot(mtcars, aes(x=disp)) +
+    #   geom_smooth(aes(y=cyl), method="loess", col="blue") +
+    #   geom_smooth(aes(y=hp * scaleFactor), method="loess", col="red") +
+    # scale_y_continuous(name="T1", sec.axis=sec_axis(~./scaleFactor, name="Delta")) +
+    # theme(
+    #   axis.title.y.left=element_text(color="blue"),
+    #   axis.text.y.left=element_text(color="blue"),
+    #   axis.title.y.right=element_text(color="red"),
+    #   axis.text.y.right=element_text(color="red")
+    # ) +
+    
+    
+    scale_x_datetime(date_labels = ("%W"),
+                     date_breaks = "weeks", 
+                     expand = expansion(0)) +
+    # coord_cartesian(ylim = c(25,33)) +
+    theme_bw() +
+    theme(axis.text.x=element_text(angle = 60, hjust = 1)) +
+    theme(axis.text=element_text(size=12)) +
+    theme(axis.title=element_text(size=18),
+          plot.title=element_text(size=20))
+  
+  return(plotdiff)
+  
+}
+
+# d.begin <- "2023-11-17 00:00:00"
+# d.end <-"2024-05-08 00:00:00"
+# LEVEL <- 2
+# # # testings
+# # change LEVEL to see plots of other TRC devices
+# pmac <- MACmap %>% filter(level == LEVEL & role == "Warming Device Control") %>%
+#   select(MAC)
+# pmac <- as.character(pmac$MAC)
+# 
+# plot_raw(pmac, d.begin, d.end, LEVEL)
+
+```
+
+
+```{r}
+d.begin <- "2023-11-17 00:00:00"
+d.end <-"2024-05-08 00:00:00"
+LEVEL <- 2
+# # testings
+# change LEVEL to see plots of other TRC devices
+pmac <- MACmap %>% filter(level == LEVEL & role == "Warming Device Control") %>%
+  select(MAC)
+pmac <- as.character(pmac$MAC)
+
+pexp2 <- plot_raw(pmac, d.begin, d.end, LEVEL)
+
+
+d.begin <- "2023-12-08 00:00:00"
+d.end <-"2024-04-24 00:00:00"
+LEVEL <- 1
+# # testings
+# change LEVEL to see plots of other TRC devices
+pmac <- MACmap %>% filter(level == LEVEL & role == "Warming Device Control") %>%
+  select(MAC)
+pmac <- as.character(pmac$MAC)
+
+pexp31 <- plot_raw(pmac, d.begin, d.end, LEVEL)
+
+
+d.begin <- "2024-04-01 00:00:00"
+d.end <- "2024-04-30 00:00:00"
+LEVEL <- 3
+# # testings
+# change LEVEL to see plots of other TRC devices
+pmac <- MACmap %>% filter(level == LEVEL & role == "Warming Device Control") %>%
+  select(MAC)
+pmac <- as.character(pmac$MAC)
+
+pexp32 <- plot_raw(pmac, d.begin, d.end, LEVEL)
+
+pexp2
+pexp31
+pexp32
+
+# SAVE AND CREATE COMBINED PLOT
+ggsave(here(FIGSTORAGE, paste("Experiment_2","MNT 100", "Leaf_Heated",".tif", sep = '_')),
+       plot = pexp2,
+       device = "tiff",
+       width = 6, height = 4, units = "in")  
+
+ggsave(here(FIGSTORAGE, paste("Experiment_3-1","MNT 100", "Leaf_Heated",".tif", sep = '_')),
+       plot = pexp31,
+       device = "tiff",
+       width = 6, height = 4, units = "in") 
+
+ggsave(here(FIGSTORAGE, paste("Experiment_3-2","MNT 100", "Leaf_Heated",".tif", sep = '_')),
+       plot = pexp32,
+       device = "tiff",
+       width = 6, height = 4, units = "in") 
+
+# summary(plotdata$temp.exp)
+# summary(plotdata$temp.b2)
+
+
+# all_exp <- (pexp2 + pexp31) / (pexp32 + plot_spacer()) +
+#     plot_layout(axis_titles = "collect") +
+#   plot_annotation(tag_levels = 'A',
+#                   tag_prefix = '(',
+#                   tag_suffix = ')') +
+# 
+# 
+# all_exp
+# ggsave(here(FIGSTORAGE, "all_exp_climate_vs_b2_temperatures.tif"),
+#        plot = last_plot(),
+#        device = "tiff",
+#        width = 6, height = 4, units = "in")  
+
+```
+

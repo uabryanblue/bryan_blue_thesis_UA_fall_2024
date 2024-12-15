@@ -1,0 +1,2 @@
+# DL1 duplicated data
+DL1 microSD card was not earased and the logs contained duplicate data that was removed in the R script.
