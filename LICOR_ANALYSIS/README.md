@@ -59,4 +59,4 @@ The code output overlaps. There are also portions of data exploration or data va
 `03_all_data_trends_level_2.qmd`\
 `05_2024_bryan_blue_thesis_model_log_main.qmd`
 
-Some, but not all, plots in `./figures/03/` and `./figures/05/` were used in the thesis or journal article based on the need for explanations in those documents.
+Some, but not all, plots in `./figures/03/` and `./figures/05/` or text results, were used in the thesis or journal article based on the need for explanations in those documents.
