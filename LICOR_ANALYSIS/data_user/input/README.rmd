@@ -1,0 +1,12 @@
+# manual data step
+SysObs_Date needs to map '2022-11-15' to '2023-11-22' in a Date format.  
+The LI-COR date was off, but the filename has the correct value.  
+  
+If you open a CSV file in Excel, you MUST change the SysObs_Date column
+to the proper format 'yyyy-m-d' before you save!!! It defaults to
+'d/m/yyyy' which is not compatible with the code.
+
+This may need to be done manually in  
+leaf_identification.csv  
+JOINED_leaf_identification.csv  
+  

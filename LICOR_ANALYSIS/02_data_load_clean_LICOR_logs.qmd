@@ -1,0 +1,265 @@
+---
+title: "LICOR Data Aggregation"
+author: "Bryan Blue"
+e-mail: 'bryanblue@arizona.edu'
+date: "Last Generated: `r Sys.Date()`"
+
+execute:
+  echo: false
+format: 
+  html:
+    code-fold: true
+    fig-width: 8
+    fig-height: 6
+  pdf:
+    fig-width: 7
+    fig-height: 5
+---
+*Always Restart R before running any script!*  
+  
+# Combine Cleaned Logs in `DATACLEAN`  
+  
+## NOTE: Run 01_wrangle_LICOR_logs.qmd first!  
+  
+__All files (read or written) are assumed to be in UTF-8. The units row contains special characters that will not render unless this is true.__   
+  
+Paths used in this script are absolute and generated using the function `here::here()`. This ensures paths are generated in the OS specific path conventions. `DATARAW`, `DATACLEAN`, `DATAUSER` are three constants for consistent reference to the appropriate folders.  
+
+Some variable names are not unique, e.g., `time`. Therefore, the variable names are a concatenation of the group name, an underscore, and the variable name.  
+e.g., group `SysObs` and variable `time` are converted into a new column name of `SysObs_time`   
+  
+__NOTE:__ To view the files from `DATACLEAN` in Excel, the files MUST be __imported into Excel__ using the import data option; otherwise, the UTF-8 unit values do not import correctly.  
+If the data file is opened directly without using the data import option in Excel, DO NOT "Convert large numbers into scientific notation." Excel may also ask, if there are many 'E' values found, to treat them as exponent values. Do not do this either. 
+```{r setup, include=FALSE}
+#| warning: false
+#| echo: false
+#| error: false
+
+knitr::opts_chunk$set(echo = TRUE)
+
+# advanced conflict resolution
+# https://conflicted.r-lib.org/
+# install.packages("devtools")
+library(conflicted)
+
+library(tidyverse)
+library(dplyr)
+conflicts_prefer(dplyr::filter)
+library(lubridate)
+library(tidyr)
+library(ggplot2)
+
+library(here)
+
+# start in the current project directory
+# this ensures relative paths will work
+# independent of the location the script
+here::here()
+# https://www.regextester.com/ for regex checking
+
+# constants to data paths
+DATARAW <- "data_raw"
+DATACLEAN <- "data_clean"
+DATAUSER <- "data_user"
+FIGSTORAGE <- "figures"
+
+dir.create(file.path(here(),FIGSTORAGE))
+dir.create(file.path(here(),DATAUSER))
+dir.create(file.path(here(),DATACLEAN))
+```
+
+
+```{r load_selected_data}
+#| warning: false
+#| echo: false
+#| error: false
+
+add_selected_file <- function(LogFileName, cleandf) {
+  
+  SelectedFilename <- here(DATACLEAN, LogFileName)
+
+  SelectedData <- read_csv(SelectedFilename, 
+                           col_names = TRUE, 
+                           show_col_types = FALSE) 
+  
+  cleandf <- rbind(cleandf, SelectedData)
+  
+  return(cleandf)
+  
+}
+```
+
+# Main Process
+
+## 1) Aggregate all the files that were pre-processed in the `DATACLEAN` folder  
+  
+Files are selected using a regex of `^selected_` and appended to a common data frame.  
+  
+## 2) Generate a `JOINED_` Leaf Identification File  
+  
+**Only change the `Data_plant_id` and `Data_leaftype` column data.**  
+  
+A file is created in the `DATAUSER` folder name `JOINED_leaf_identification.csv` This consists of the joined values from the new combined data set and the previous `leaf_identification.csv` file.  
+  
+Any `NA` values in the `JOINED_` file need to have the `Data_plant_id`, and `Data_leaftype` columns need to be manually changed to the correct values based on the experiment leaf measurement procedures. Once this `JOINED_` file is cleaned  it should be renamed by removing the prefix `JOINED_` to replace the file existing `leaf_identification.csv` for future processing with any new data.      
+  
+**This process needs to be performed every time new files are added to `DATACLEAN`.**  
+  
+**NOTE:** It is recommended that the previous `leaf_identification.csv` file be backed up before replacing it with the new version.  
+   
+The following information will help identify the type of leaf that was measured and on which plant.  
+`Filenames_filename`, `Data_group`, `Data_remarks`, `Data_plant_id`, `Data_leaftype`  
+  
+**Only change the `Data_plant_id` and `Data_leaftype` column data.**  
+  
+`Filenames_filename` - provided: the original LI-COR text log file name.  
+
+`Data_group` - provided: the group number that corresponds to the `[Data]` block within each LI-COR log file.  
+  
+`Data_remarks` - provided: the remarks found in the `Data_group` within the `Filenames_filename`  
+  
+`Data_plant_id` - REQUIRED: user-defined value to identify a unique plant and experiment combination, current values are numbers `1`, `2` or `3`. `1` = level 3, experiment 1; `2` = level 2 experiment, `3` = level 3, experiment 2  
+  
+`Data_leaftype` - REQUIRED: user-defined value to identify the leaf on the plant used for LI-COR readings. `Treatment`, `Control`, and `Reference` values should exist for each group of readings for each leaf on each plant in the experiment. Other values are ignored. Six (or more) valid readings for each set need to be identified with these names. Additional values can be assigned for leaves that are not explicitly part of the experiment such as a `bad reading`. These need not be unique, but should be descriptive enough to understand why this is not included in the experiment analysis.    
+
+```{r main}
+#| warning: false
+#| echo: false
+#| error: false
+
+# Aggregate all the files that were pre-processed and have a prefix of "selected_"
+# these are the files that only contain values of interest from the selected fields
+FileList <- list.files(here(DATACLEAN), pattern = "^selected_")
+cleandf <- data.frame()
+
+# build a df that contains all of the selected_ files clean data
+for (FileName in FileList) {
+  # print(FileName)
+  cleandf <- add_selected_file(FileName, cleandf)
+}
+
+# store off all of the combined data
+write_csv(cleandf, here(DATAUSER,"selected_log_data.csv"), 
+          append = FALSE, 
+          col_names = TRUE)
+
+```
+
+```{r empty_joined_data}
+#| warning: false
+#| echo: false
+#| error: false
+
+# DEFUNCT CODE __Generate an Empty Leaf Identification File__
+# store off the first columns of the combined data to generate a file
+# used for manual identification of information that is not contained
+# within the LICOR data
+# NOTE: this file is generated every time, any edits will be lost
+# write_csv(cleandf[,1:6],
+#           here(DATAUSER, "input", "EMPTY_leaf_identification.csv"),
+#           append = FALSE,
+#           col_names = TRUE)
+# 
+# __Generate the JOINED Leaf Identification File__
+# join all lines in the current leaf_identification.csv file with cleandf
+# previously identified rows will remain and unknown rows will be added
+# JOINED_final_raw_data.csv can be continued to be edited once done,
+# it should replace the leaf_identification.csv file for future processing
+leafdf <- read_csv(here(DATAUSER, "input", "leaf_identification.csv"),
+                   col_names = TRUE,
+                   show_col_types = FALSE)
+  leafdf$SysObs_date <- as.Date(leafdf$SysObs_date)
+  cleandf$SysObs_date <- as.Date(cleandf$SysObs_date)
+
+  # leafdf$SysObs_date <- as.Date(leafdf$SysObs_date, format, tryFormats = c("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y"))
+leafjoindf <-full_join(cleandf, leafdf, by = c('Filenames_filename', 'Data_group', 'SysObs_obs'))
+# join causes duplication of column names
+# rename the required columns and remove the ones that are duplicats
+leafjoindf <- rename(leafjoindf, c("Data_remarks" = "Data_remarks.x",
+                                  "Data_plant_id" = "Data_plant_id.y",
+                                  "Data_leaftype" = "Data_leaftype.y",
+                                  "SysObs_date" = "SysObs_date.x"))
+leafjoindf[,"Data_remarks.y"] <- NULL
+leafjoindf[,"Data_plant_id.x"] <- NULL
+leafjoindf[,"Data_leaftype.x"] <- NULL
+leafjoindf[,"SysObs_date.y"] <- NULL
+
+# general column name cleanup to get rid of remaining .x and .y columns
+colnames(leafjoindf)<-gsub("\\.x","",colnames(leafjoindf))
+leafjoindf <- leafjoindf %>% select(-contains(".y"))
+
+# the fields are in the wrong order from the joine and cleanup, put them back
+leafjoindf <- leafjoindf %>% 
+  relocate(c(Data_remarks, Data_plant_id, Data_leaftype), .after = Data_group)
+
+# final file that the user should continue to edit
+write_csv(leafjoindf, here(DATAUSER, "input", "JOINED_leaf_identification.csv"),
+          append = FALSE,
+          col_names = TRUE)
+```
+
+```{r leaf_identification}
+#| warning: false
+#| echo: false
+#| error: false
+
+#__Combine leaf_identification.csv wit the cleandf__
+# add in the leaf identification information that the user has entered
+# this newdf contains only identified leaf rows
+newdf <-inner_join(leafdf, cleandf, by = c('Filenames_filename', 'Data_group', 'SysObs_obs'))
+# join causes duplication of column names
+newdf <- rename(newdf,c("Data_remarks" = "Data_remarks.x", 
+                        "Data_plant_id" = "Data_plant_id.x", 
+                        "Data_leaftype" = "Data_leaftype.x"))
+# colmun names with ".x" are kept
+# column names with ".y" are removed as they do not contain data
+newdf[,"Data_remarks.y"] <- NULL
+newdf[,"Data_plant_id.y"] <- NULL
+newdf[,"Data_leaftype.y"] <- NULL
+
+colnames(newdf)<-gsub("\\.x","",colnames(newdf))
+newdf <- newdf %>% select(-contains(".y"))
+# # add the week number based on the date
+# newdf <- newdf %>%
+#     mutate(week = strftime(newdf$SysObs_date, format = "%V"))
+
+# the first run of experiment on level 3 did not work
+# it was restarted on 20240403
+# to keep the rest of the analysis working on new experiment
+# change all level 3 Data_plan_id before this date to 1 so they will be ignored
+newdf <- within(newdf, {
+    f <- Data_plant_id == '3' & SysObs_time <= 1712172641
+    Data_plant_id[f] <- '1'
+    # State[f] <- 'CA' # other conditions can be modified
+}) 
+
+# TODO find the right place for this!!!
+# The clock was off at one point
+# SysObs_date of 11/15/2024 should be 11/22/2024
+# newdf$SysObs_date <- as.Date(newdf$SysObs_date)
+newdf <- newdf %>% 
+  mutate(SysObs_date = replace(SysObs_date, SysObs_date == '2022-11-15', '2023-11-22'))
+
+# filter out valid records where Q was 700
+# Q of 500 was used by mistake
+newdf_700 <- newdf %>%
+  filter(LeafQ_Qin > 680.0)
+
+write_csv(newdf_700, here(DATAUSER,"final_raw_data.csv"), 
+          append = FALSE, 
+          col_names = TRUE)
+
+# Q of 500 was used by mistake, filter them out so they are not lost
+newdf_500 <- newdf %>%
+  filter(LeafQ_Qin < 680.0)
+
+write_csv(newdf_500, here(DATAUSER,"final_raw_data_500.csv"), 
+          append = FALSE, 
+          col_names = TRUE)
+
+plantleaftype <- unique(newdf$Data_leaftype) %>% sort()
+print("Found the following unique leaf types:")
+plantleaftype
+
+```
+Only leaf type values of `Treatment`, `Reference`, and `Control` are used in analysis.  

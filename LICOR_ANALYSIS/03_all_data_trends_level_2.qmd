@@ -1,0 +1,1287 @@
+---
+title: "LI-COR Data Processing for Level 2"
+author: "Bryan Blue"
+e-mail: 'bryanblue@arizona.edu'
+date: "Last Generated: `r Sys.Date()`"
+execute:
+  echo: false
+format: 
+  html:
+    code-fold: true
+    fig-width: 8
+    fig-height: 6
+  pdf:
+    fig-width: 7
+    fig-height: 4
+    echo: false
+
+---
+
+```{r setup, include=FALSE}
+#| echo: false
+knitr::opts_chunk$set(echo = FALSE)
+
+# advanced conflict resolution
+# https://conflicted.r-lib.org/
+# install.packages("devtools")
+library(conflicted)
+
+require(tidyverse)
+# library(ggplot2)
+# require(tidyr)
+library(lubridate)
+# library(dplyr)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::arrange)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::summarize)
+conflicts_prefer(dplyr::mutate)
+ 
+library(here)
+conflicts_prefer(here::here)
+
+library(patchwork)
+#load multcomp library necessary for using Dunnett's Correction
+library(multcomp)
+
+source(here("LICOR_LOGS_functions.R"))
+
+# start in the current project directory
+# this ensures relative paths will work
+# independent of the location the script
+here::here()
+
+# constants to data paths
+DATARAW <- "data_raw"
+DATACLEAN <- "data_clean"
+DATAUSER <- "data_user"
+
+FIGSTORAGE <- "figures"
+dir.create(file.path(here(),FIGSTORAGE))
+FIGSTORAGE <- "figures/03"
+dir.create(file.path(here(),FIGSTORAGE))
+dir.create(file.path(here(),DATAUSER))
+dir.create(file.path(here(),DATACLEAN))
+
+ELEVATION <- 2 # elevation (mountain level) of the experiment, numeric value of 2 or 3
+plantvariable <- "GasEx_A" # initialize default column name in finaldata
+
+treatments <- c("Heated", "Unheated", "Control")
+# https://www.regextester.com/ for regex checking
+
+```
+
+*Always Restart R before running any script!*  
+
+# Data Exploration and Visualization  
+Initial exploration of data, mostly for experiment `2` as it has the largest data set.  
+  
+## NOTE: Run 01_wrangle_LICOR_logs.qmd and 02_data_load_clean_LICOR_logs.qmd first!  
+
+Paths used in this script are absolute and generated using the function `here::here()`. This ensures paths are generated in the OS specific path conventions. `DATARAW`, `DATACLEAN`, `DATAUSER` are three constants for consistent reference to the appropriate folders.  
+
+`Data_leaftype` column values were originally: `Treatment`, `Control`, `Reference`    
+These were changed to values that make it clear what each leaf treatment was: `Heated`, `Unheated`, `Control` respectively.  
+
+```{r function_load_data}
+#| warning: false
+#| echo: false
+#| error: false
+
+# ## Load previously cleaned LI-COR data and fix treatment names.  
+# `Data_leaftype` column values were originally: `Treatment`, `Control`, `Reference`    
+# These were changed to values that make it clear what each leaf treatment was: `Heated`, `Unheated`, `Control` respectively.  
+
+# load the raw data for all observations, selected variables
+# that was created from 01_wrangle_LICOR_logs.qmd and 02_load_clean_LICOR_logs.qmd
+load_data <- function(final_raw_data_name = "final_raw_data.csv") {
+  # final_raw_data_name <- here(DATAUSER, "final_raw_data.csv")
+  
+  # all data from all experiments
+  finaldata <- read_and_clean_data(final_raw_data_name)
+  finaldata$SysObs_date <- as.Date(finaldata$SysObs_date)
+
+
+  # convert group variable, Data_leaftype, to factor 
+  # Treatment = Heated Leaf
+  # Control = Unheated Leaf
+  # Reference = Control
+  levels(finaldata$Data_leaftype)[levels(finaldata$Data_leaftype) %in% c('Treatment')] <- 'Heated'
+  levels(finaldata$Data_leaftype)[levels(finaldata$Data_leaftype) %in% c('Control')] <- 'Unheated'
+  levels(finaldata$Data_leaftype)[levels(finaldata$Data_leaftype) %in% c('Reference')] <- 'Control'
+  finaldata$Data_leaftype <- factor(finaldata$Data_leaftype,
+                                    levels = c('Heated','Unheated','Control'), ordered = TRUE)
+  
+  
+  return(finaldata)
+}
+
+```
+
+```{r load_data_and_variable_descriptions}
+#| warning: false
+#| echo: false
+#| error: false
+# load LI-COR data and variable descriptions
+
+# load previously generated data file for analysis
+# that was created from 01_wrangle_LICOR_logs.qmd and 02_load_clean_LICOR_logs.qmd
+finaldata <- load_data(here(DATAUSER, "final_raw_data.csv"))
+
+# need a cleaned up version for Excel data work
+write_csv(finaldata, here(DATAUSER,"descriptive","final_raw_data_cleaned.csv"), 
+          append = FALSE, 
+          col_names = TRUE)
+
+# load in dataframe with LI-COR groups, variable names, and units
+get_variable_properties <- function(variabledata, plantvariable) {
+  
+  vgroup <- variabledata["group", plantvariable]
+  vname <- variabledata["name", plantvariable]
+  vunits <- variabledata["units", plantvariable]
+  # not all UTF-8 characters are supported, might be a better way
+  vunits <- str_replace_all(vunits, "⁻²", "-2")
+  vunits <- str_replace_all(vunits, '⁻¹', "-1")
+  return(c(vgroup, vname, vunits))
+}
+
+# 
+# # load in dataframe with LI-COR groups, variable names, and units
+LICOR_variables <- load_LICOR_variable_descriptions(here(DATAUSER, "input", "select_logdata_fields.csv"))
+
+```
+
+
+
+```{r daily_plots}
+#| echo: false
+#| warning: false
+
+# #  Mean Functions
+# Generations of statistical summary of weekly means.  
+# Plotting weekly means.  
+# Functions to generate plots: Point, 95% CI, Box Plot
+
+# calculate the median, mean, and sd of a given experiment level and variable
+create_variable_statistics <- function(plantdata, plantlevel, plantvariable) {
+  # #   #summarize mean and sd for each category
+
+  # create summary statistics for each level and treatment type
+  variable_statistics <- plantdata %>%
+    filter(Data_plant_id == plantlevel) %>%
+    group_by(Filenames_filename, SysObs_date, Data_leaftype)  %>%
+    summarize(
+      var_median = median(get(plantvariable), na.rm = TRUE),
+      var_mean = mean(get(plantvariable), na.rm = TRUE),
+      var_sd = sd(get(plantvariable), na.rm = TRUE)
+    )
+
+  
+  return(variable_statistics)
+}
+
+# plot the mean value of a given variable of interest
+# data should come from create_variable_statistics()
+plot_variable_point <- function(plantdata, LICOR_variables, plantlevel, plantvariable)  {
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+    experiment <- plantid_to_experiment(plantlevel)
+
+  df_summary <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+  
+  pvp <- ggplot(data = df_summary, 
+                aes(x = SysObs_date, y = var_mean, color = Data_leaftype)) + 
+    geom_point(size = 2) +
+    geom_errorbar(aes(x = SysObs_date, ymin = var_mean - var_sd, ymax = var_mean + var_sd),
+                  width = 3, color = 'black') +
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38'),
+                       labels = c('Heated', 'Unheated', 'Control')) +
+    geom_point(size = 2) +
+    ggtitle(paste(dispplantvariable[2], "Experiment", experiment, sep = ' ')) +
+    xlab("Leaf") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")"), sep = '') +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1))
+  
+  return(pvp)
+}
+
+# plot the mean value of a given variable of interest
+# data should come from create_variable_statistics()
+plot_variable_line_95_error <- function(plantdata, LICOR_variables, plantlevel, plantvariable, leaftype)  {
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  experiment <- plantid_to_experiment(plantlevel)
+
+  plantdata <- plantdata %>% filter(Data_leaftype == leaftype)
+  df_summary <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+  
+  pvl95 <- ggplot(data = df_summary, 
+                  aes(x = SysObs_date,  y = var_mean, color = Data_leaftype)) +
+    geom_errorbar(aes(x = SysObs_date, ymin = var_mean - var_sd, ymax = var_mean + var_sd),
+                  width = 3, color = 'black') +
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38'),
+                       labels = c('Heated', 'Unheated', 'Control')) +
+    geom_point(size = 2) +    
+    # geom_line(linewidth = 0.2) +
+    
+    geom_smooth(se=FALSE) + #add linear trend line
+    theme_bw() +
+    ggtitle(paste('Mean ', dispplantvariable[2], " Experiment ", experiment, sep = '')) + # "\n",
+                  # "Trendline with 95% Confidence Interval", sep = '')) +
+    xlab("Week of Observation") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  
+  return(pvl95)
+}
+
+# plot the mean value of a given variable of interest
+# data should come from create_variable_statistics()
+plot_variable_boxplot <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+    experiment <- plantid_to_experiment(plantlevel)
+
+  # dispplantvariable <- str_split(plantvariable, "_")[[1]][2]
+  plantdata <- plantdata %>% filter(Data_plant_id == plantlevel)
+  
+  pvb <-  ggplot() +
+    geom_boxplot(data = plantdata, 
+                 aes(x = Data_leaftype , y = get(plantvariable), color = Data_leaftype),
+                 outlier.color = "red", outlier.size = 2) +
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38'),
+                       labels = c('Heated', 'Unheated', 'Control')) +
+    # scale_x_discrete(labels = c('Heated', 'Unheated', 'Control')) +
+    ggtitle(paste(dispplantvariable[2], "Experiment", experiment, sep = ' ')) +
+    theme_bw() +
+    xlab("Leaf") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  
+  return(pvb)
+}
+
+```
+
+
+#  LI-COR Log Variable Graphs
+
+Experiment `2` graphs are the most complete as experiment `1` did not have accurate data collection until mid-February. Thermocouple movement caused invalid readings that were also passed to the control algorithm that caused periods of uncontrolled heating.   
+  
+Experiment `1` was restarted in February as experiment `3` and only ran for a few weeks before the leaves senescenced from possible uncontrolled heating due to thermocouple movement or unknown local environment changes.  
+
+{{< pagebreak >}}
+
+
+
+# Experiment `r ELEVATION` Statistics  
+## one-way ANOVA  
+  
+```{r one_way_anova_GasEx_Emm}
+#| warning: false
+#| echo: false
+#| error: false
+
+# Statistics for different LI-COR variables can be obtained by changing the variable name in the statistics creation call.  
+
+
+# create a long version of mean, median, sd for the variable of interest
+# the first parameter is the experiments level on the moutain
+# the second parameter is the LI-COR variable of interest
+elevation_sats <- finaldata
+elevation_sats$SysObs_date <- as.factor(elevation_sats$SysObs_date)
+elevation_sats <- elevation_sats %>% filter(Data_plant_id == ELEVATION)
+
+# elevation_sats$Data_leaftype <- relevel(elevation_sats$Data_leaftype, ref = "Control")
+#fit anova model
+anova_model <- aov(GasEx_Emm ~ Data_leaftype, data = elevation_sats)
+summary(anova_model)
+
+
+```
+## Tukey’s Test  
+Want to make every possible pairwise comparison.  
+
+If Confidence Interval doesn't contain zero then the difference between these two group means is statistically significant.    
+```{r one_way_anova_post_hoc_GasEx_Emm}
+
+# perform Tukey's Test for multiple comparisons
+TukeyHSD(anova_model, conf.level=.95) 
+
+# visualize the 95% confidence intervals
+# plot(TukeyHSD(anova_model, conf.level=.95))
+
+```
+
+
+## Dunnett’s Correction  
+Compare every group mean to a control mean, not interested in comparing the treatment means with one another. *Not Used but available for comparison* 
+
+```{r Dunnets_test}
+#| warning: false
+#| echo: false
+#| error: false
+
+# move control to first factor position for Dunnet Comparison
+finaldata$Data_leaftype <- factor(finaldata$Data_leaftype,
+                                  levels = c('Control', 'Heated','Unheated'), ordered = TRUE)
+
+#perform comparisons
+dunnet_comparison <- glht(anova_model, linfct = mcp(Data_leaftype = "Dunnett"))
+
+# put factor order back so graphs are consistent
+finaldata$Data_leaftype <- factor(finaldata$Data_leaftype,
+                                  levels = c('Heated','Unheated','Control'), ordered = TRUE)
+# #view summary of comparisons
+summary(dunnet_comparison)
+
+
+```
+
+# Various views of the variables of interest with trendlines.
+
+```{r mean_median_functions}
+#| warning: false
+#| echo: false
+#| error: false
+
+# can be used for testing
+# finaldata <- load_data(here(DATAUSER, "final_raw_data.csv"))
+
+# plot the means for the Heated and Control treatments
+plot_means <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+  
+  stats_table <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+    experiment <- plantid_to_experiment(plantlevel)
+
+  # need to place each treatment's mean into it's own column
+  widedf_means <- pivot_wider(stats_table,
+                              names_from = Data_leaftype,
+                              values_from = var_mean) 
+  # create table with just the mean values
+  meansdf <- widedf_means %>% 
+    select(Filenames_filename, SysObs_date, Heated, Unheated, Control) %>%
+    reframe(across(everything(), ~ na.omit(.x))) # reframe instead of summarize
+  
+  dispplantvariable <- str_split(plantvariable, "_")[[1]][2]
+  
+  ggplot(data = meansdf) +
+    geom_point(aes(x = SysObs_date, y = Heated, color = 'Heated')) +
+    geom_smooth(aes(x = SysObs_date, y = Heated), se=FALSE, col='#F8766D', size=1) + #add linear trend line
+    
+    # geom_line(aes(x = SysObs_date, y = Unheated, color = '#619CFF')) +
+    geom_point(aes(x = SysObs_date, y = Control, color = 'Control')) +
+    geom_smooth(aes(x = SysObs_date, y = Control), se=FALSE, col='#00BA38', size=1) + #add linear trend line
+    theme_bw() +
+
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38'),
+                       labels = c('Heated', 'Unheated', 'Control')) +
+    # geom_smooth() + #add linear trend line
+    ggtitle(paste(dispplantvariable, "for Experiment", experiment, sep = ' '))+
+    xlab("Observation Date") +
+    ylab(paste(dispplantvariable, " (", select_logdata_fields[[plantvariable]][3], ")"))
+  
+      ggsave(here(FIGSTORAGE, paste(experiment, "_", plantvariable, "_means.png", sep = '')),
+           device = "png",
+           width = 6, height = 4, units = "in")
+  
+}
+
+
+# plot the medians for the Heated and Control treatments
+plot_delta_medians <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+  #| echo: false
+  #| warning: false 
+  
+  stats_table <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+  experiment <- plantid_to_experiment(plantlevel)
+
+  # need to place each treatment's mean into it's own column
+  widedf_median <- pivot_wider(stats_table,
+                               names_from = Data_leaftype,
+                               values_from = var_median) 
+  
+  # create table with just the median values
+  meadiansdf <- widedf_median %>% 
+    select(Filenames_filename, SysObs_date, Heated, Unheated, Control) %>%
+    reframe(across(everything(), ~ na.omit(.x))) # reframe instead of summarize
+  
+  meadiansdf <-
+    meadiansdf |> 
+    mutate(HCdiff = Heated - Control)
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  
+  ggplot(data = meadiansdf) +
+    geom_point(aes(x = SysObs_date, y = HCdiff, color = 'Delta')) +
+    geom_smooth(aes(x = SysObs_date, y = HCdiff), se=FALSE, col='darkorange', size=1) + #add linear trend line
+    
+    # geom_line(aes(x = SysObs_date, y = Unheated, color = '#619CFF')) +
+    geom_line(aes(x = SysObs_date, y = Heated, color = 'Heated')) +
+    geom_line(aes(x = SysObs_date, y = Control, color = 'Control')) +
+    theme_bw() +
+
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control', 'Delta'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38', 'Delta' = 'darkorange'),
+                       labels = c('Heated', 'Unheated', 'Control', 'Delta')) +
+    ggtitle(paste(dispplantvariable[2], "for Experiment", experiment, '\n', 'Median Delta Heated - Control', sep = ' ')) +
+    xlab("Observation Date") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  ggsave(here(FIGSTORAGE, paste(experiment, "_", plantvariable, "_delta_medians.png", sep = '')),
+         device = "png",
+         width = 6, height = 4, units = "in")
+  
+}
+
+```
+
+```{r deltas}
+
+# plot the means for the Heated and Control treatments
+plot_delta_heat_unheated_means <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+#| warning: false
+#| echo: false
+#| error: false
+  
+  stats_table <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+    experiment <- plantid_to_experiment(plantlevel)
+
+  # need to place each treatment's mean into it's own column
+  widedf_means <- pivot_wider(stats_table,
+                              names_from = Data_leaftype,
+                              values_from = var_mean) 
+  
+  # create table with just the median values
+  meansdf <- widedf_means %>% 
+    select(Filenames_filename, SysObs_date, Heated, Unheated, Control) %>%
+    reframe(across(everything(), ~ na.omit(.x))) # reframe instead of summarize
+  
+  meansdf <-
+    meansdf |> 
+    mutate(HCdiff = Heated - Unheated)
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  
+  plt <- ggplot(data = meansdf) +
+    geom_point(aes(x = SysObs_date, y = HCdiff, color = 'Delta'), size=1) +
+    geom_smooth(aes(x = SysObs_date, y = HCdiff), se=FALSE, col='darkorange', size=1) + #add linear trend line
+    
+    # geom_line(aes(x = SysObs_date, y = Unheated, color = '#619CFF')) +
+    geom_point(aes(x = SysObs_date, y = Heated, color = 'Heated'), size=1) +
+    geom_smooth(aes(x = SysObs_date, y = Heated), se=FALSE, col="#F8766D", size=1) + #add linear trend line
+    
+    geom_point(aes(x = SysObs_date, y = Unheated, color = 'Unheated'), size=1) +
+    geom_smooth(aes(x = SysObs_date, y = Unheated), se=FALSE, col="#619CFF", size=1) + #add linear trend line
+    theme_bw() +
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control', 'Delta'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38', 'Delta' = 'darkorange'),
+                       labels = c('Heated', 'Unheated', 'Control', 'Delta')) +
+    ggtitle(paste(dispplantvariable[2], "for Experiment", experiment, '\n', 'Mean Delta Heated - Unheated', sep = ' ')) +
+    xlab("Observation Date") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  
+  ggsave(here(FIGSTORAGE, paste(experiment, "_", plantvariable, "_heat_unheat_means.png", sep = '')),
+         device = "png",
+         width = 6, height = 4, units = "in")
+  return(plt)
+}
+
+# plot the means for the Heated and Unheated treatments
+plot_delta_heated_control_means <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+  #| echo: false
+  #| warning: false 
+  
+  stats_table <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+  experiment <- plantid_to_experiment(plantlevel)
+
+  # need to place each treatment's mean into it's own column
+  widedf_means <- pivot_wider(stats_table,
+                              names_from = Data_leaftype,
+                              values_from = var_mean) 
+  
+  # create table with just the median values
+  meaansdf <- widedf_means %>% 
+    select(Filenames_filename, SysObs_date, Heated, Unheated, Control) %>%
+    reframe(across(everything(), ~ na.omit(.x))) # reframe instead of summarize
+  
+  meaansdf <-
+    meaansdf |> 
+    mutate(HCdiff = Control - Heated)
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  
+plt <- ggplot(data = meaansdf) +
+    geom_point(aes(x = SysObs_date, y = HCdiff, color = 'Delta'), size = 1) +
+    geom_smooth(aes(x = SysObs_date, y = HCdiff),
+                se=FALSE, col='darkorange', size=1) + #add linear trend line
+    
+    # geom_line(aes(x = SysObs_date, y = Unheated, color = '#619CFF')) +
+    geom_point(aes(x = SysObs_date, y = Heated, color = "Heated"), size = 1) +
+    geom_smooth(aes(x = SysObs_date, y = Heated), se=FALSE, col="#F8766D", size=1) + #add linear trend line
+    
+    geom_point(aes(x = SysObs_date, y = Control, color = "Control"), size = 1) +
+    geom_smooth(aes(x = SysObs_date, y = Control),
+                se=FALSE, col="#00BA38", size=1) + #add linear trend line
+    theme_bw() +
+    
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control', 'Delta'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF',
+                                  'Control' = '#00BA38', 'Delta' = 'darkorange'),
+                       labels = c('Heated', 'Unheated', 'Control', 'Delta')) +
+    
+    ggtitle(paste(dispplantvariable[2], "for Experiment", experiment, '\n', 'Mean Delta Heated - Control', sep = ' ')) +
+    xlab("Observation Date") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  
+    ggsave(here(FIGSTORAGE, paste(experiment, "_", plantvariable, "_heat_control_means.png", sep = '')),
+         device = "png",
+         width = 6, height = 4, units = "in")
+  return(plt)
+}
+
+# plot the means for the Heated and Control treatments
+plot_delta_unheated_control_means <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+  #| echo: false
+  #| warning: false 
+  
+  stats_table <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+    experiment <- plantid_to_experiment(plantlevel)
+
+  # need to place each treatment's mean into it's own column
+  widedf_means <- pivot_wider(stats_table,
+                              names_from = Data_leaftype,
+                              values_from = var_mean) 
+  
+  # create table with just the median values
+  meansdf <- widedf_means %>% 
+    select(Filenames_filename, SysObs_date, Heated, Unheated, Control) %>%
+    reframe(across(everything(), ~ na.omit(.x))) # reframe instead of summarize
+  
+  meansdf <-
+    meansdf |> 
+    mutate(HCdiff = Control - Unheated)
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  
+  plt <- ggplot(data = meansdf) +
+    geom_point(aes(x = SysObs_date, y = HCdiff, color = 'Delta'), size=1) +
+    geom_smooth(aes(x = SysObs_date, y = HCdiff), se=FALSE, col='darkorange', size=1) + #add linear trend line
+    
+    # geom_line(aes(x = SysObs_date, y = Unheated, color = '#619CFF')) +
+    geom_point(aes(x = SysObs_date, y = Unheated, color = 'Unheated'), size=1) +
+    geom_smooth(aes(x = SysObs_date, y = Unheated), se=FALSE, col="#619CFF", size=0.75) + #add linear trend line
+    
+    geom_point(aes(x = SysObs_date, y = Control, color = 'Control'), size=1) +
+    geom_smooth(aes(x = SysObs_date, y = Control), se=FALSE, col="#00BA38", size=0.75) + #add linear trend line
+    theme_bw() +
+
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control', 'Delta'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38', 'Delta' = 'darkorange'),
+                       labels = c('Heated', 'Unheated', 'Control', 'Delta')) +
+    ggtitle(paste(dispplantvariable[2], "for Experiment", experiment, '\n', 'Mean Delta Unheated - Control', sep = ' ')) +
+    xlab("Observation Date") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  
+    ggsave(here(FIGSTORAGE, paste(experiment, "_", plantvariable, "_unheat_control_means.png", sep = '')),
+         device = "png",
+         width = 6, height = 4, units = "in")
+  
+    return(plt)
+}
+```
+
+
+```{r}
+# plot the means for the Heated and Unheated treatments
+# TODO this is very ugly, refactor, use better algos
+plot_hc_means <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+#| warning: false
+#| echo: false
+#| error: false
+  # plantdata <- finaldata
+  # plantvariable <- "GasEx_A"
+  # plantlevel <- 2
+
+  
+  plantbylvl <- plantdata %>%
+    filter(Data_plant_id == plantlevel) 
+  
+  counts <- plantbylvl %>%
+    group_by(Filenames_filename, SysObs_date, Data_leaftype)  %>%
+    count(Data_leaftype)
+  
+  variable_statistics <- plantbylvl %>%
+    group_by(Filenames_filename, SysObs_date, Data_leaftype)  %>%
+    summarize(
+      var_median = median(get(plantvariable), na.rm = TRUE),
+      var_mean = mean(get(plantvariable), na.rm = TRUE),
+      var_sd = sd(get(plantvariable), na.rm = TRUE)
+    )
+  
+  all_data <- variable_statistics %>%
+    full_join(counts)
+
+  stats_table <- within(all_data, ci <- qnorm(0.975) * all_data$var_sd/sqrt(all_data$n))
+  
+
+# 
+#   stats_table <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+  experiment <- plantid_to_experiment(plantlevel)
+#   
+  # need to place each treatment's mean into it's own column
+  widedf_means <- stats_table %>%
+    pivot_wider( 
+                names_from = Data_leaftype,
+                values_from = var_mean)
+
+ h_meaansdf <- widedf_means %>%
+    filter(!is.na(Heated))# %>%
+ h_meaansdf <- subset(h_meaansdf, select = -c(Unheated, Control ))
+ 
+ u_meaansdf <- widedf_means %>%
+    filter(!is.na(Unheated))# %>%
+ u_meaansdf <- subset(u_meaansdf, select = -c(Heated, Control))
+
+  c_meaansdf <- widedf_means %>%
+    filter(!is.na(Control))# %>%
+  c_meaansdf <- subset(c_meaansdf, select = -c(Unheated, Heated ))
+
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  trend_size <- 0.75 # trendline size
+  
+  plt <-
+    ggplot() +
+
+    geom_point(data = h_meaansdf, 
+               aes(x = SysObs_date, y = Heated, color = "Heated"), shape = 16, size = 3) +
+    geom_smooth(data = h_meaansdf, 
+                aes(x = SysObs_date, y = Heated), se=FALSE, col="#F8766D", size=trend_size) + 
+    geom_errorbar(data = h_meaansdf, 
+                  aes(x = SysObs_date, ymin=Heated-ci, ymax=Heated+ci), width=2) +
+    # 
+    # geom_point(data = u_meaansdf, 
+    #            aes(x = SysObs_date, y = Unheated, color = "Unheated"), shape = 17, size = 3) +
+    # geom_smooth(data = u_meaansdf, 
+    #             aes(x = SysObs_date, y = Unheated), se=FALSE, col="#619CFF", size=trend_size) + 
+    # geom_errorbar(data = u_meaansdf, 
+    #               aes(x = SysObs_date, ymin=Unheated-ci, ymax=Unheated+ci), width=2) +
+    # # 
+    geom_point(data = c_meaansdf, 
+               aes(x = SysObs_date, y = Control, color = "Control"), shape = 18, size = 3) +
+    geom_smooth(data = c_meaansdf, 
+                aes(x = SysObs_date, y = Control), se=FALSE, col="#00BA38", size=trend_size) + 
+    geom_errorbar(data = c_meaansdf, 
+                  aes(x = SysObs_date, ymin=Control - ci, ymax=Control + ci), width=2) +  
+    
+    # theme(text = element_text(size = 40),
+    #       axis.text.x = element_text(angle = 45, hjust = 1)) +  
+
+    
+    theme_bw() +
+
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control', 'Delta'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF',
+                                  'Control' = '#00BA38', 'Delta' = 'darkorange'),
+                       labels = c('Heated', 'Unheated', 'Control', 'Delta')) +
+    
+    ggtitle(paste(dispplantvariable[2], "for Experiment", experiment, sep = ' ')) +
+    
+    theme(axis.title.x = element_text(size = 18), 
+          axis.title.y = element_text(size = 18),
+          plot.title = element_text(size=18),
+          axis.text=element_text(size=12)) +
+    
+    xlab("Observation Date") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  
+  ggsave(here(FIGSTORAGE, paste(experiment, "_", plantvariable, "_all_means.png", sep = '')),
+         device = "png",
+         width = 6, height = 4, units = "in")
+# plt  
+  
+  return(plt)
+}
+# plt
+
+plot_hu_means <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+#| warning: false
+#| echo: false
+#| error: false
+  # plantdata <- finaldata
+  # plantvariable <- "GasEx_A"
+  # plantlevel <- 2
+
+  
+  plantbylvl <- plantdata %>%
+    filter(Data_plant_id == plantlevel) 
+  
+  counts <- plantbylvl %>%
+    group_by(Filenames_filename, SysObs_date, Data_leaftype)  %>%
+    count(Data_leaftype)
+  
+  variable_statistics <- plantbylvl %>%
+    group_by(Filenames_filename, SysObs_date, Data_leaftype)  %>%
+    summarize(
+      var_median = median(get(plantvariable), na.rm = TRUE),
+      var_mean = mean(get(plantvariable), na.rm = TRUE),
+      var_sd = sd(get(plantvariable), na.rm = TRUE)
+    )
+  
+  all_data <- variable_statistics %>%
+    full_join(counts)
+
+  stats_table <- within(all_data, ci <- qnorm(0.975) * all_data$var_sd/sqrt(all_data$n))
+  
+
+# 
+#   stats_table <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+  experiment <- plantid_to_experiment(plantlevel)
+#   
+  # need to place each treatment's mean into it's own column
+  widedf_means <- stats_table %>%
+    pivot_wider( 
+                names_from = Data_leaftype,
+                values_from = var_mean)
+
+ h_meaansdf <- widedf_means %>%
+    filter(!is.na(Heated))# %>%
+ h_meaansdf <- subset(h_meaansdf, select = -c(Unheated, Control ))
+ 
+ u_meaansdf <- widedf_means %>%
+    filter(!is.na(Unheated))# %>%
+ u_meaansdf <- subset(u_meaansdf, select = -c(Heated, Control))
+
+  c_meaansdf <- widedf_means %>%
+    filter(!is.na(Control))# %>%
+  c_meaansdf <- subset(c_meaansdf, select = -c(Unheated, Heated ))
+
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  trend_size <- 0.75 # trendline size
+  
+  plt <-
+    ggplot() +
+
+    geom_point(data = h_meaansdf, 
+               aes(x = SysObs_date, y = Heated, color = "Heated"), shape = 16, size = 3) +
+    geom_smooth(data = h_meaansdf, 
+                aes(x = SysObs_date, y = Heated), se=FALSE, col="#F8766D", size=trend_size) + 
+    geom_errorbar(data = h_meaansdf, 
+                  aes(x = SysObs_date, ymin=Heated-ci, ymax=Heated+ci), width=2) +
+    # 
+    geom_point(data = u_meaansdf,
+               aes(x = SysObs_date, y = Unheated, color = "Unheated"), shape = 17, size = 3) +
+    geom_smooth(data = u_meaansdf,
+                aes(x = SysObs_date, y = Unheated), se=FALSE, col="#619CFF", size=trend_size) +
+    geom_errorbar(data = u_meaansdf,
+                  aes(x = SysObs_date, ymin=Unheated-ci, ymax=Unheated+ci), width=2) +
+    #
+    # geom_point(data = c_meaansdf, 
+    #            aes(x = SysObs_date, y = Control, color = "Control"), shape = 18, size = 3) +
+    # geom_smooth(data = c_meaansdf, 
+    #             aes(x = SysObs_date, y = Control), se=FALSE, col="#00BA38", size=trend_size) + 
+    # geom_errorbar(data = c_meaansdf, 
+    #               aes(x = SysObs_date, ymin=Control - ci, ymax=Control + ci), width=2) +  
+    
+    # theme(text = element_text(size = 40),
+    #       axis.text.x = element_text(angle = 45, hjust = 1)) +  
+
+    
+    theme_bw() +
+
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control', 'Delta'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF',
+                                  'Control' = '#00BA38', 'Delta' = 'darkorange'),
+                       labels = c('Heated', 'Unheated', 'Control', 'Delta')) +
+    
+    ggtitle(paste(dispplantvariable[2], "for Experiment", experiment, sep = ' ')) +
+    
+    theme(axis.title.x = element_text(size = 18), 
+          axis.title.y = element_text(size = 18),
+          plot.title = element_text(size=18),
+          axis.text=element_text(size=12)) +
+    
+    xlab("Observation Date") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  
+  ggsave(here(FIGSTORAGE, paste(experiment, "_", plantvariable, "_all_means.png", sep = '')),
+         device = "png",
+         width = 6, height = 4, units = "in")
+# plt  
+  
+  return(plt)
+}
+# plt
+
+plot_uc_means <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+  #| echo: false
+  #| warning: false 
+  # plantdata <- finaldata
+  # plantvariable <- "GasEx_A"
+  # plantlevel <- 2
+
+  
+  plantbylvl <- plantdata %>%
+    filter(Data_plant_id == plantlevel) 
+  
+  counts <- plantbylvl %>%
+    group_by(Filenames_filename, SysObs_date, Data_leaftype)  %>%
+    count(Data_leaftype)
+  
+  variable_statistics <- plantbylvl %>%
+    group_by(Filenames_filename, SysObs_date, Data_leaftype)  %>%
+    summarize(
+      var_median = median(get(plantvariable), na.rm = TRUE),
+      var_mean = mean(get(plantvariable), na.rm = TRUE),
+      var_sd = sd(get(plantvariable), na.rm = TRUE)
+    )
+  
+  all_data <- variable_statistics %>%
+    full_join(counts)
+
+  stats_table <- within(all_data, ci <- qnorm(0.975) * all_data$var_sd/sqrt(all_data$n))
+  
+
+# 
+#   stats_table <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+  experiment <- plantid_to_experiment(plantlevel)
+#   
+  # need to place each treatment's mean into it's own column
+  widedf_means <- stats_table %>%
+    pivot_wider( 
+                names_from = Data_leaftype,
+                values_from = var_mean)
+
+ h_meaansdf <- widedf_means %>%
+    filter(!is.na(Heated))# %>%
+ h_meaansdf <- subset(h_meaansdf, select = -c(Unheated, Control ))
+ 
+ u_meaansdf <- widedf_means %>%
+    filter(!is.na(Unheated))# %>%
+ u_meaansdf <- subset(u_meaansdf, select = -c(Heated, Control))
+
+  c_meaansdf <- widedf_means %>%
+    filter(!is.na(Control))# %>%
+  c_meaansdf <- subset(c_meaansdf, select = -c(Unheated, Heated ))
+
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  trend_size <- 0.75 # trendline size
+  
+  plt <-
+    ggplot() +
+
+    # geom_point(data = h_meaansdf, 
+    #            aes(x = SysObs_date, y = Heated, color = "Heated"), shape = 16, size = 3) +
+    # geom_smooth(data = h_meaansdf, 
+    #             aes(x = SysObs_date, y = Heated), se=FALSE, col="#F8766D", size=trend_size) + 
+    # geom_errorbar(data = h_meaansdf, 
+    #               aes(x = SysObs_date, ymin=Heated-ci, ymax=Heated+ci), width=2) +
+    # 
+    geom_point(data = u_meaansdf,
+               aes(x = SysObs_date, y = Unheated, color = "Unheated"), shape = 17, size = 3) +
+    geom_smooth(data = u_meaansdf,
+                aes(x = SysObs_date, y = Unheated), se=FALSE, col="#619CFF", size=trend_size) +
+    geom_errorbar(data = u_meaansdf,
+                  aes(x = SysObs_date, ymin=Unheated-ci, ymax=Unheated+ci), width=2) +
+    #
+    geom_point(data = c_meaansdf,
+               aes(x = SysObs_date, y = Control, color = "Control"), shape = 18, size = 3) +
+    geom_smooth(data = c_meaansdf,
+                aes(x = SysObs_date, y = Control), se=FALSE, col="#00BA38", size=trend_size) +
+    geom_errorbar(data = c_meaansdf,
+                  aes(x = SysObs_date, ymin=Control - ci, ymax=Control + ci), width=2) +
+    
+    # theme(text = element_text(size = 40),
+    #       axis.text.x = element_text(angle = 45, hjust = 1)) +  
+
+    
+    theme_bw() +
+
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control', 'Delta'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF',
+                                  'Control' = '#00BA38', 'Delta' = 'darkorange'),
+                       labels = c('Heated', 'Unheated', 'Control', 'Delta')) +
+    
+    ggtitle(paste(dispplantvariable[2], "for Experiment", experiment, sep = ' ')) +
+    
+    theme(axis.title.x = element_text(size = 18), 
+          axis.title.y = element_text(size = 18),
+          plot.title = element_text(size=18),
+          axis.text=element_text(size=12)) +
+    
+    xlab("Observation Date") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  
+  ggsave(here(FIGSTORAGE, paste(experiment, "_", plantvariable, "_all_means.png", sep = '')),
+         device = "png",
+         width = 6, height = 4, units = "in")
+# plt  
+  
+  return(plt)
+}
+# plt
+```
+
+```{r}
+#| warning: false
+#| echo: false
+#| error: false
+# plot the means for the Heated and Unheated treatments
+# TODO this is very ugly, refactor, use better algos
+plot_all_means <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+  #| echo: false
+  #| warning: false 
+  # plantdata <- finaldata
+  # plantvariable <- "GasEx_A"
+  # plantlevel <- 2
+
+  
+  plantbylvl <- plantdata %>%
+    filter(Data_plant_id == plantlevel) 
+  
+  counts <- plantbylvl %>%
+    group_by(Filenames_filename, SysObs_date, Data_leaftype)  %>%
+    count(Data_leaftype)
+  
+  variable_statistics <- plantbylvl %>%
+    group_by(Filenames_filename, SysObs_date, Data_leaftype)  %>%
+    summarize(
+      var_median = median(get(plantvariable), na.rm = TRUE),
+      var_mean = mean(get(plantvariable), na.rm = TRUE),
+      var_sd = sd(get(plantvariable), na.rm = TRUE)
+    )
+  
+  all_data <- variable_statistics %>%
+    full_join(counts)
+
+  stats_table <- within(all_data, ci <- qnorm(0.975) * all_data$var_sd/sqrt(all_data$n))
+  
+
+# 
+#   stats_table <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+  experiment <- plantid_to_experiment(plantlevel)
+#   
+  # need to place each treatment's mean into it's own column
+  widedf_means <- stats_table %>%
+    pivot_wider( 
+                names_from = Data_leaftype,
+                values_from = var_mean)
+
+ h_meaansdf <- widedf_means %>%
+    filter(!is.na(Heated))# %>%
+ h_meaansdf <- subset(h_meaansdf, select = -c(Unheated, Control ))
+ 
+ u_meaansdf <- widedf_means %>%
+    filter(!is.na(Unheated))# %>%
+ u_meaansdf <- subset(u_meaansdf, select = -c(Heated, Control))
+
+  c_meaansdf <- widedf_means %>%
+    filter(!is.na(Control))# %>%
+  c_meaansdf <- subset(c_meaansdf, select = -c(Unheated, Heated ))
+
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  trend_size <- 0.75 # trendline size
+  
+  plt <-
+    ggplot() +
+
+    geom_point(data = h_meaansdf, 
+               aes(x = SysObs_date, y = Heated, color = "Heated"), shape = 16, size = 3) +
+    geom_smooth(data = h_meaansdf, 
+                aes(x = SysObs_date, y = Heated), se=FALSE, col="#F8766D", size=trend_size) + 
+    geom_errorbar(data = h_meaansdf, 
+                  aes(x = SysObs_date, ymin=Heated-ci, ymax=Heated+ci), width=2) +
+    # 
+    geom_point(data = u_meaansdf, 
+               aes(x = SysObs_date, y = Unheated, color = "Unheated"), shape = 17, size = 3) +
+    geom_smooth(data = u_meaansdf, 
+                aes(x = SysObs_date, y = Unheated), se=FALSE, col="#619CFF", size=trend_size) + 
+    geom_errorbar(data = u_meaansdf, 
+                  aes(x = SysObs_date, ymin=Unheated-ci, ymax=Unheated+ci), width=2) +
+    # 
+    geom_point(data = c_meaansdf, 
+               aes(x = SysObs_date, y = Control, color = "Control"), shape = 18, size = 3) +
+    geom_smooth(data = c_meaansdf, 
+                aes(x = SysObs_date, y = Control), se=FALSE, col="#00BA38", size=trend_size) + 
+    geom_errorbar(data = c_meaansdf, 
+                  aes(x = SysObs_date, ymin=Control - ci, ymax=Control + ci), width=2) +  
+    
+    # theme(text = element_text(size = 40),
+    #       axis.text.x = element_text(angle = 45, hjust = 1)) +  
+
+    
+    theme_bw() +
+
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control', 'Delta'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF',
+                                  'Control' = '#00BA38', 'Delta' = 'darkorange'),
+                       labels = c('Heated', 'Unheated', 'Control', 'Delta')) +
+    
+    ggtitle(paste(dispplantvariable[2], "for Experiment", experiment, sep = ' ')) +
+    
+    theme_bw() +
+    theme(axis.title.x = element_text(size = 18), 
+          axis.title.y = element_text(size = 18),
+          plot.title = element_text(size=12),
+          axis.text=element_text(size=12)) +
+
+    theme(legend.position = c(0.7, 1.05), 
+          legend.direction = "horizontal",
+          legend.title = element_text(size=8),
+          legend.text = element_text(size=6),
+          legend.key.size = unit(0.4, 'cm')) +
+
+
+    xlab("Observation Date") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  
+  ggsave(here(FIGSTORAGE, paste(experiment, "_", plantvariable, "_all_means.png", sep = '')),
+         device = "png",
+         width = 6, height = 4, units = "in")
+# plt  
+  
+  return(plt)
+}
+# plt
+plot_all_means(finaldata, LICOR_variables, 2, "GasEx_A")
+plot_all_means(finaldata, LICOR_variables, 2, "GasEx_gsw")
+plot_all_means(finaldata, LICOR_variables, 2, "GasEx_Emm")
+plot_all_means(finaldata, LICOR_variables, 2, "GasEx_VPDleaf")
+
+plot_all_means(finaldata, LICOR_variables, 3, "GasEx_A")
+plot_all_means(finaldata, LICOR_variables, 3, "GasEx_gsw")
+plot_all_means(finaldata, LICOR_variables, 3, "GasEx_Emm")
+plot_all_means(finaldata, LICOR_variables, 3, "GasEx_VPDleaf")
+
+plot_all_means(finaldata, LICOR_variables, 1, "GasEx_A")
+plot_all_means(finaldata, LICOR_variables, 1, "GasEx_gsw")
+plot_all_means(finaldata, LICOR_variables, 1, "GasEx_Emm")
+plot_all_means(finaldata, LICOR_variables, 1, "GasEx_VPDleaf")
+
+
+```
+
+# Delta Plots by Treatment For Any Variable of Interest
+
+## GasEx_A
+
+```{r delta_GasEx_A}
+#| warning: false
+#| echo: false
+#| error: false
+
+# plot_delta_heated_control_means(finaldata, LICOR_variables, ELEVATION, "GasEx_A")
+# plot_delta_unheated_control_means(finaldata, LICOR_variables, ELEVATION, "GasEx_A")
+# plot_delta_heat_unheated_means(finaldata, LICOR_variables, ELEVATION, "GasEx_A")
+
+plot_hc_means(finaldata, LICOR_variables, ELEVATION, "GasEx_A")
+plot_hu_means(finaldata, LICOR_variables, ELEVATION, "GasEx_A")
+plot_uc_means(finaldata, LICOR_variables, ELEVATION, "GasEx_A")
+
+
+```
+
+
+
+## GasEx_gsw
+
+```{r delta_GasEx_gsw}
+#| warning: false
+#| echo: false
+#| error: false
+# plot_delta_heated_control_means(finaldata, LICOR_variables, ELEVATION, "GasEx_gsw")
+# plot_delta_unheated_control_means(finaldata, LICOR_variables, ELEVATION, "GasEx_gsw")
+# plot_delta_heat_unheated_means(finaldata, LICOR_variables, ELEVATION, "GasEx_gsw")
+
+plot_all_means(finaldata, LICOR_variables, ELEVATION, "GasEx_gsw")
+# plot_hc_means(finaldata, LICOR_variables, ELEVATION, "GasEx_gsw")
+# plot_hu_means(finaldata, LICOR_variables, ELEVATION, "GasEx_gsw")
+# plot_uc_means(finaldata, LICOR_variables, ELEVATION, "GasEx_gsw")
+
+```
+
+## GasEx_Emm
+
+```{r delta_GasEx_Emm}
+#| warning: false
+#| echo: false
+#| error: false
+# plot_delta_heated_control_means(finaldata, LICOR_variables, ELEVATION, "GasEx_Emm")
+# plot_delta_unheated_control_means(finaldata, LICOR_variables, ELEVATION, "GasEx_Emm")
+# plot_delta_heat_unheated_means(finaldata, LICOR_variables, ELEVATION, "GasEx_Emm")
+
+plot_all_means(finaldata, LICOR_variables, ELEVATION, "GasEx_Emm")
+# plot_hc_means(finaldata, LICOR_variables, ELEVATION, "GasEx_Emm")
+# plot_hu_means(finaldata, LICOR_variables, ELEVATION, "GasEx_Emm")
+# plot_uc_means(finaldata, LICOR_variables, ELEVATION, "GasEx_Emm")
+
+```
+## VPDleaf
+
+```{r delta_GasEx_VPDleaf}
+#| warning: false
+#| echo: false
+#| error: false
+# plot_delta_heated_control_means(finaldata, LICOR_variables, ELEVATION, "GasEx_VPDleaf")
+# plot_delta_unheated_control_means(finaldata, LICOR_variables, ELEVATION, "GasEx_VPDleaf")
+# plot_delta_heat_unheated_means(finaldata, LICOR_variables, ELEVATION, "GasEx_VPDleaf")
+
+plot_all_means(finaldata, LICOR_variables, ELEVATION, "GasEx_VPDleaf")
+# plot_hc_means(finaldata, LICOR_variables, ELEVATION, "GasEx_VPDleaf")
+# plot_hu_means(finaldata, LICOR_variables, ELEVATION, "GasEx_VPDleaf")
+# plot_uc_means(finaldata, LICOR_variables, ELEVATION, "GasEx_VPDleaf")
+
+```
+
+
+
+# Daily Observations  
+Plots of each day worth of data, up to six points, by log file  
+  
+Data has been scrubbed of invalid values such as any < 0  
+Only points that were used in this analysis appear for any given day of data.  
+```{r plot_plant}
+#| warning: false
+#| echo: false
+#| error: false
+
+plot_plant_line <- function(plantdata, plantid, fname, plantvar) {
+  
+  # for testing
+  #  plantvar <- "GasEx_A" 	
+  # fname <- "2023-11-17-1144_logdata-tc-heat"
+  # plantdata <- finaldata %>%
+  # end testing values
+  experiment <- plantid_to_experiment(plantid)
+  
+  myplantdata <- plantdata %>%
+    filter(Filenames_filename == fname &
+             Data_plant_id == plantid) # &
+             # (Data_leaftype == "Treatment" |
+             #    Data_leaftype == "Control" |
+             #    Data_leaftype == "Reference"))
+  # print(myplantdata$Filenames_filename)
+  if (nrow(myplantdata) > 0) {
+    plot <- ggplot() +
+      # geom_point(data = final_data, 
+      geom_line(data=myplantdata, 
+                aes(x = SysObs_obs, y = get(plantvar), color = Data_leaftype)) +
+      # geom_line(data = final_data, aes(x = SysObs_date, y = GasEx_gsw, color = "GasEx_gsw")) +
+      ggtitle(paste("LI-COR Daily Observations Experiment", experiment, "\n", fname)) +
+      xlab("Observation #") +
+      ylab(plantvar) +
+      scale_color_manual(name = 'Leaf',
+                     breaks = c('Heated', 'Unheated', 'Control'),
+                     values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38'),
+                     labels = c('Heated', 'Unheated', 'Control')) + 
+      # breaks=c(0, 0.1, 0.2, 0.5))   +
+      # scale_x_datetime(date_labels = ("%M:%S"),
+      #     date_breaks = "10 sec",  expand = expansion(0)) +
+      theme_bw() +
+      theme(axis.text.x=element_text(angle=60, hjust=1))
+    
+      ggsave(here(FIGSTORAGE, paste(experiment, "_", fname, "_", plantvariable, "_daily.png", sep = '')),
+         device = "png",
+         width = 6, height = 4, units = "in")
+  }  
+  return(plot)
+}
+```
+## GasEx_A Experiment 1
+```{r raw_plots_exp_1}
+#| warning: false
+#| echo: false
+#| error: false
+
+
+
+# change to the value of interest
+varname <- "GasEx_A"
+plantlevel <- 2
+# break out by level (2 or 3)
+plantdata <- finaldata %>%
+  filter(Data_plant_id == plantlevel) # &
+          # Filenames_filename != "2024-03-06-1151_logdata_lvl2" )
+
+FileName <- as.list(unique(as.character(plantdata$Filenames_filename)))
+print(FileName)
+# RAW DATA PLOTS
+myplot <- lapply(FileName, plot_plant_line, plantdata = plantdata, plantid = plantlevel, plantvar = varname)
+
+print(myplot)
+
+
+```
+## GasEx_A Experiment 2
+```{r raw_plots_exp_2}
+#| warning: false
+#| echo: false
+#| error: false
+
+# "2024-03-06-1151_logdata_lvl2" exception day?
+
+
+
+# change to the value of interest
+varname <- "GasEx_A"
+plantlevel <- 1
+# break out by level (2 or 3)
+plantdata <- finaldata %>%
+  filter(Data_plant_id == plantlevel) # &
+          # Filenames_filename != "2024-03-06-1151_logdata_lvl2" )
+
+FileName <- as.list(unique(as.character(plantdata$Filenames_filename)))
+print(FileName)
+# RAW DATA PLOTS
+myplot <- lapply(FileName, plot_plant_line, plantdata = plantdata, plantid = plantlevel, plantvar = varname)
+
+print(myplot)
+
+
+```
+
+## GasEx_A Experiment 3
+```{r raw_plots_exp_3}
+#| warning: false
+#| echo: false
+#| error: false
+
+# "2024-03-06-1151_logdata_lvl2" exception day?
+
+
+
+# change to the value of interest
+varname <- "GasEx_A"
+plantlevel <- 3
+# break out by level (2 or 3)
+plantdata <- finaldata %>%
+  filter(Data_plant_id == plantlevel) # &
+          # Filenames_filename != "2024-03-06-1151_logdata_lvl2" )
+
+FileName <- as.list(unique(as.character(plantdata$Filenames_filename)))
+print(FileName)
+# RAW DATA PLOTS
+myplot <- lapply(FileName, plot_plant_line, plantdata = plantdata, plantid = plantlevel, plantvar = varname)
+
+print(myplot)
+
+
+```

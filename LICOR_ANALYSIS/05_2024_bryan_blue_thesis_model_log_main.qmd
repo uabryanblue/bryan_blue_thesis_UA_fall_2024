@@ -1,0 +1,1956 @@
+---
+title: "2024 Thesis"
+author: "Bryan Blue"
+e-mail: 'bryanblue@arizona.edu'
+date: "Last Generated: `r Sys.Date()`"
+execute:
+  echo: false
+format: 
+  html:
+    code-fold: true
+    fig-width: 8
+    fig-height: 6
+  pdf:
+    fig-width: 7
+    fig-height: 4
+    echo: false
+
+---
+
+```{r include=FALSE}
+#| label: setup
+#| echo: false
+knitr::opts_chunk$set(echo = FALSE)
+
+# https://www.regextester.com/ for regex checking
+
+# advanced conflict resolution
+# https://conflicted.r-lib.org/
+# install.packages("devtools")
+library(conflicted)
+
+require(tidyverse)
+library(lubridate)
+library(dplyr)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::arrange)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::summarize)
+conflicts_prefer(dplyr::mutate)
+
+library(readr)
+library(here)
+conflicts_prefer(here::here)
+
+# help with plot layouts
+library(patchwork)
+#load DescTools library for Dunnett's test
+library(DescTools)
+# #load multcomp library necessary for using Dunnett's Correction
+library(multcomp)
+
+source(here("LICOR_LOGS_functions.R"))
+
+# start in the current project directory
+# this ensures relative paths will work
+# independent of the location the script
+here::here()
+
+# constants to realative data paths
+DATARAW <- "data_raw" # TREAT READ ONLY. Raw LICOR data logs.
+DATACLEAN <- "data_clean" # files generated from data_raw through data wrangling
+DATAUSER <- "data_user" # data the user manually enters or manipulates
+ELEVATION <- 2 # elevation (mountain level) of the experiment, numeric value of 2 or 3
+
+FIGSTORAGE <- "figures" # should exist for all figures
+dir.create(file.path(here(),FIGSTORAGE))
+FIGSTORAGE <- "figures/05" # path to store this script ggplots
+dir.create(file.path(here(),FIGSTORAGE))
+dir.create(file.path(here(),DATAUSER))
+dir.create(file.path(here(),DATACLEAN))
+
+
+plantvariable <- "GasEx_A" # initialize a default column name in finaldata df
+
+# list of the three TREATMENTS in this experiment
+# used in data manipulation and plots
+TREATMENTS <- c("Control", "Heated", "Unheated")
+
+
+# THESE ARE ADDITIONAL THAT MIGHT BE OF INTEREST
+# plantvariable <- "GasEx_A"
+# plantvariable <- "GasEx_gsw"
+# plantvariable <- "GasEx_VPDleaf"
+# plantvariable <- "GasEx_Emm"
+# plantvariable <- "GasEx_E"
+# plantvariable <- "GasEx_Ci"
+# plantvariable <- "GasEx_VPDleaf"
+# plantvariable <- "GasEx_RHcham"
+# plantvariable <- "Meas_Tleaf"
+# plantvariable <- "Meas_CO2_r"
+
+# list of main variables of interest
+# LICORVARS <- c("GasEx_A", "GasEx_gsw", "GasEx_Emm", "Meas_Tleaf", "GasEx_RHcham","GasEx_VPDleaf" )
+LICORVARS <- c("GasEx_A", "GasEx_gsw", "GasEx_Emm", "GasEx_VPDleaf")
+
+# USE THE LASTEST THERMOCOUPLE DATA FOR EACH LEAF
+# HOURLY AVERAGES FOUND IN THIS LOCATION
+# TCDATADIR <- here(gsub("LICOR/", "", here("Data_Loggers","data_clean")))
+TCDATADIR <- here(gsub("LICOR_ANALYSIS/", "", here("DATA_LOGGER_ANALYSIS","data_clean")))
+
+TCHOURDATA <- "TRC_hour_stats.csv"
+CLIMATEHOURDATA <- "climate_hour_stats.csv"
+
+
+# reverse log transformed data into original units using delta method
+# lm methods
+# https://www.statforbiology.com/2019/stat_general_reportingresults/
+
+# transform results back into original units
+# https://journals.sagepub.com/doi/full/10.1177/00045632211050531
+
+
+```
+
+*Always Restart R before running any script!*  
+
+__All files (read or written) are assumed to be in UTF-8. The units row contains special characters that will not render unless this is true.__   
+  
+Paths used in this script are absolute and generated using the function `here::here()`. This ensures paths are generated in the OS specific path conventions. `DATARAW`, `DATACLEAN`, `DATAUSER` are three constants for consistent reference to the appropriate folders.  
+
+# General Statistical Analysis by Experiment
+Generate statistics for experiments and variables of interest. Store the results 
+ANOVA and Tukey stats into CSV files.  
+  
+Plots are generated to explore statistic model assumptions and results.  
+All plots from this script are stored as PNG files in the `./figures/05/` folder.  
+
+
+```{r}
+#| label: function_load_LICOR_data
+#| warning: false
+#| echo: false
+#| error: false
+
+# load the raw data for all observations, selected variables
+# that were created from 01_wrangle_LICOR_logs.qmd and 02_load_clean_LICOR_logs.qmd
+load_LICOR_data <- function(final_raw_data_name = "final_raw_data.csv") {
+  # final_raw_data_name <- here(DATAUSER, "final_raw_data.csv")
+  
+  # all data from all experiments
+  finaldata <- read_and_clean_data(final_raw_data_name)
+  
+  # convert group variable, Data_leaftype, to ordered factor 
+  # Reference = Control Leaf
+  # Treatment = Heated Leaf
+  # Control = Unheated Leaf
+  levels(finaldata$Data_leaftype)[levels(finaldata$Data_leaftype) %in% 
+                                    c('Treatment')] <- 'Heated'
+  levels(finaldata$Data_leaftype)[levels(finaldata$Data_leaftype) %in% 
+                                    c('Control')] <- 'Unheated'
+  levels(finaldata$Data_leaftype)[levels(finaldata$Data_leaftype) %in% 
+                                    c('Reference')] <- 'Control'
+  # initial order, needs changed based on stats function as needed
+  finaldata$Data_leaftype <- factor(finaldata$Data_leaftype,
+                                    levels = c('Heated','Unheated', 'Control'),
+                                    ordered = TRUE)
+  
+  # standardize data
+  finaldata <- finaldata %>%
+    mutate(DateTime = as.POSIXct(paste(SysObs_date, SysObs_hhmmss)))
+  
+    finaldata$SysObs_date <- as.Date(finaldata$SysObs_date)
+
+  
+  return(finaldata)
+}
+
+```
+
+
+```{r}
+#| label: load_LICOR_data_and_variable_descriptions
+#| warning: false
+#| echo: false
+#| error: false
+
+# load previously generated data file for analysis
+# that was created from 01_wrangle_LICOR_logs.qmd and 02_load_clean_LICOR_logs.qmd
+finaldata <- load_LICOR_data(here(DATAUSER, "final_raw_data.csv"))
+
+# load in dataframe with LI-COR groups, variable names, and units
+LICOR_variables <- load_LICOR_variable_descriptions(here(DATAUSER, "input", "select_logdata_fields.csv")) 
+
+# extract the group, LI-COR variable name, and units given internal name
+# get_variable_properties <- function(variabledata, plantvariable) {
+#   
+#   vgroup <- variabledata["group", plantvariable]
+#   vname <- variabledata["name", plantvariable]
+#   vunits <- variabledata["units", plantvariable]
+#   
+#   return(c(vgroup, vname, vunits))
+# }
+
+# load in dataframe with LI-COR groups, variable names, and units
+get_variable_properties <- function(variabledata, plantvariable) {
+  
+  vgroup <- variabledata["group", plantvariable]
+  vname <- variabledata["name", plantvariable]
+  vunits <- variabledata["units", plantvariable]
+  # not all UTF-8 characters are supported, might be a better way
+  vunits <- str_replace_all(vunits, "⁻²", "-2")
+  vunits <- str_replace_all(vunits, '⁻¹', "-1")
+  return(c(vgroup, vname, vunits))
+}
+
+# # USE THE LASTEST THERMOCOUPLE DATA FOR EACH LEAF
+# # HOURLY AVERAGES FOUND IN THIS LOCATION
+# TCDATADIR <- here(gsub("LICOR/", "", here("Data_Loggers","data_clean")))
+# TCHOURDATA <- "TRC_hour_stats.csv"
+# CLIMATEHOURDATA <- "climate_hour_stats.csv"
+
+climate_hour_data <- read_climate_hour_data(here(TCDATADIR, CLIMATEHOURDATA))
+
+TC_hour_data <- read_TC_hour_data(here(TCDATADIR, TCHOURDATA))
+
+```
+
+
+
+
+
+#  Mean Functions
+Functions that generated plots of statistical summary of weekly means.  
+Plots: Point, 95% CI, Box Plot
+```{r}
+#| label: daily_plots
+#| include: false
+#| echo: false
+#| warning: false
+
+
+# calculate the median, mean, and sd of a given experiment level and variable
+create_variable_statistics <- function(plantdata, plantlevel, plantvariable) {
+  
+  # create summary statistics for each level and treatment type
+  variable_statistics <- plantdata %>%
+    filter(Data_plant_id == plantlevel) %>%
+    group_by(Filenames_filename, SysObs_date, Data_leaftype)  %>%
+    summarize(
+      var_median = median(get(plantvariable), na.rm = TRUE),
+      var_mean = mean(get(plantvariable), na.rm = TRUE),
+      var_sd = sd(get(plantvariable), na.rm = TRUE)
+    )
+  
+  return(variable_statistics)
+}
+
+# # plot the mean value of a given variable of interest
+# # data should come from create_variable_statistics()
+# plot_variable_point <- function(plantdata, LICOR_variables, plantlevel, plantvariable)  {
+#   
+#   dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+#   
+#   df_summary <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+#   
+#   pvp <- ggplot(data = df_summary, 
+#                 aes(x = SysObs_date, y = var_mean, color = Data_leaftype)) + 
+#     geom_point(size = 2) +
+#     geom_errorbar(aes(x = SysObs_date, ymin = var_mean - var_sd, ymax = var_mean + var_sd),
+#                   width = 0.2, color = 'black') +
+#     scale_color_manual(name = 'Leaf',
+#                        breaks = c('Heated', 'Unheated', 'Control'),
+#                        values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38'),
+#                        labels = c('Heated', 'Unheated', 'Control')) +
+#     geom_point(size = 2) +
+#     ggtitle(paste(dispplantvariable[2], "Elevation", ELEVATION, sep = ' ')) +
+#     xlab("Leaf") +
+#     ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")"), sep = '') +
+#     theme(axis.text.x = element_text(angle = 60, hjust = 1))
+#   
+#   return(pvp)
+# }
+# 
+# library(ggpubr)
+# # plot the mean value of a given variable of interest
+# # data should come from create_variable_statistics()
+# plot_variable_line_95_error <- 
+#   function(plantdata, LICOR_variables, plantlevel, plantvariable, leaftype)  {
+#     
+#     dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+#     plantdata <- plantdata %>%
+#       filter(Data_leaftype == leaftype)
+#     # df_summary <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+#     
+#     pvl95 <- ggplot(data = plantdata, 
+#                     aes(x = SysObs_date, y = get(plantvariable), color = Data_leaftype)) +
+#       # geom_errorbar(aes(x = SysObs_date, ymin = var_mean - var_sd, ymax = var_mean + var_sd),
+#       #               width = 0.2, color = 'black') +
+#       scale_color_manual(name = 'Leaf',
+#                          breaks = c('Heated', 'Unheated', 'Control'),
+#                          values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38'),
+#                          labels = c('Heated', 'Unheated', 'Control')) +
+#       geom_point(linewidth = 0.2) +
+#       # geom_point(size = 1) +
+#       stat_smooth(method = "lm") + #add linear trend line
+#       stat_regline_equation(label.x.npc = "center") +
+#       ggtitle(paste('INCORRECT! Mean ', dispplantvariable[2], " Elevation ", plantlevel, "\n",
+#                     "Trendline with 95% Confidence Interval", sep = '')) +
+#       xlab("Week of Observation") +
+#       ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+#     
+#     return(pvl95)
+#   }
+
+
+plot_variable_boxplot <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+  
+  plantdata$Data_leaftype <- factor(plantdata$Data_leaftype,
+                                    levels = c('Heated','Unheated', 'Control'),
+                                    ordered = TRUE)
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  # dispplantvariable <- str_split(plantvariable, "_")[[1]][2]
+  plantdata <- plantdata %>% filter(Data_plant_id == plantlevel)
+  
+ 
+  pvb <-  ggplot(data = plantdata, 
+                 aes(x = Data_leaftype , y = get(plantvariable), color = Data_leaftype),
+                 outlier.color = "black", outlier.size = 1) +
+    stat_boxplot(geom ='errorbar')  +
+    geom_boxplot() +
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38'),
+                       labels = c('Heated', 'Unheated', 'Control')) +
+    scale_fill_discrete(guide="none") +
+    # scale_x_discrete(labels = c('Heated', 'Unheated', 'Control')) +
+    # ggtitle(paste(dispplantvariable[2], "Level", plantlevel, sep = ' ')) +
+    xlab("Leaf") +
+
+    theme_bw() +
+    theme(axis.title.x = element_text(size = 18), 
+          axis.title.y = element_text(size = 18),
+          plot.title = element_text(size=12)) +
+          # axis.text=element_text(size=12)) +
+          # legend.position="none") +
+    theme(legend.position="none") +
+    
+
+    theme(axis.title.x = element_text(size = 18), 
+          axis.title.y = element_text(size = 18),
+          plot.title = element_text(size=12),
+          axis.text=element_text(size=12)) +
+# 
+#     theme(legend.position = c(0.7, 1.05), 
+#           legend.direction = "horizontal",
+#           legend.title = element_text(size=8),
+#           legend.text = element_text(size=6),
+#           legend.key.size = unit(0.4, 'cm')) +
+    
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  
+    ggsave(here(FIGSTORAGE, paste(plantlevel, "_", plantvariable, "_boxplot.png", sep = '')),
+           device = "png",
+           width = 6, height = 4, units = "in")
+
+  return(pvb)
+}
+
+
+# # histograms for variable of interest
+# plot_variable_histogram <- function(plantdata, LICOR_variables, plantlevel, plantvariable, leaftype)  {
+#     
+#     dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+#     
+#     plantdata <- plantdata %>% 
+#       filter(Data_plant_id == plantlevel &
+#                Data_leaftype == leaftype)
+#     
+#     # TODO: get the fill to follow the color conventions in scale_color_manual
+#     pvb <- ggplot() +
+#       geom_histogram(data = plantdata,
+#                      aes(x = get(plantvariable), col = Data_leaftype)) +
+#       # geom_freqpoly(data = plantdata,
+#       #              aes(x = get(plantvariable), color = Data_leaftype)) +
+#       scale_color_manual(name = 'Leaf',
+#                          breaks = c('Heated', 'Unheated', 'Control'),
+#                          values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38'),
+#                          labels = c('Heated', 'Unheated', 'Control')) +
+#       # TODO: if transformations are needed in the plot, this could be used
+#       # scale_x_log10() + 
+#       ggtitle(paste(dispplantvariable[2], "Elevation", plantlevel, sep = ' ')) +
+#       xlab("Leaf") +
+#       ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+#     
+#     return(pvb)
+#     
+#   }
+```
+
+
+# Experiment `r ELEVATION` Histograms 
+
+```{r}
+#| label: all_variable_plots
+#| include: false
+#| echo: false
+#| warning: false
+#| error: false
+
+# plot_variable_boxplot(plantdata, LICOR_variables, plantlevel, plantvariable)
+lapply(LICORVARS, 
+       plot_variable_boxplot, 
+       plantdata=finaldata, 
+       LICOR_variables=LICOR_variables, 
+       plantlevel=2)
+
+lapply(LICORVARS, 
+       plot_variable_boxplot, 
+       plantdata=finaldata, 
+       LICOR_variables=LICOR_variables, 
+       plantlevel=1)
+
+lapply(LICORVARS, 
+       plot_variable_boxplot, 
+       plantdata=finaldata, 
+       LICOR_variables=LICOR_variables, 
+       plantlevel=3)
+
+```
+
+# Experiment `r ELEVATION` Statistics  
+
+
+
+# Various views of the variables of interest with trendlines.
+
+
+```{r}
+#| label: deltas
+#| warning: false
+#| echo: false
+#| error: false
+
+# plot the means for the Heated and Control treatments
+plot_delta_heat_unheated_means <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+  
+  
+  stats_table <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+  
+  # need to place each treatment's mean into it's own column
+  widedf_means <- pivot_wider(stats_table,
+                              names_from = Data_leaftype,
+                              values_from = var_mean) 
+  
+  # create table with just the median values
+  meansdf <- widedf_means %>% 
+    select(Filenames_filename, SysObs_date, Heated, Unheated, Control) %>%
+    reframe(across(everything(), ~ na.omit(.x))) # reframe instead of summarize
+  
+  meansdf <-
+    meansdf |> 
+    mutate(HCdiff = Heated - Unheated)
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  
+  plt <- ggplot(data = meansdf) +
+    geom_point(aes(x = SysObs_date, y = HCdiff, color = 'Delta'), size=2) +
+    geom_smooth(aes(x = SysObs_date, y = HCdiff), se=FALSE, col='darkorange',
+                size=1, linetype = "solid") + #add linear trend line
+    
+    # geom_line(aes(x = SysObs_date, y = Unheated, color = '#619CFF')) +
+    geom_point(aes(x = SysObs_date, y = Heated, color = 'Heated'), shape = 18, size=3) +
+    geom_smooth(aes(x = SysObs_date, y = Heated), se=FALSE, col="#F8766D",
+                size=1, linetype = "longdash") + #add linear trend line
+    
+    geom_point(aes(x = SysObs_date, y = Unheated, color = 'Unheated'), shape = 17, size=2) +
+    geom_smooth(aes(x = SysObs_date, y = Unheated), se=FALSE, col="#619CFF",
+                size=1, linetype = "twodash") + #add linear trend line
+    theme_bw() +
+    scale_color_manual(name = plantvariable,
+                       breaks = c('Heated', 'Unheated', 'Control', 'Delta'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38', 'Delta' = 'darkorange'),
+                       labels = c('Heated', 'Unheated', 'Control', 'Delta')) +
+    # ggtitle(paste(dispplantvariable[2], "for Elevation", plantlevel, '\n', 'Mean Delta Heated - Unheated', sep = ' ')) +
+    xlab("Observation Date") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  
+  ggsave(here(FIGSTORAGE, paste(plantlevel, "_", plantvariable, "_HU_delta.png", sep = '')),
+         plot = last_plot(),
+         device = "png",
+         width = 6, height = 4, units = "in")
+  
+  return(plt)
+  
+}
+
+# plot the means for the Heated and Unheated treatments
+plot_delta_heated_control_means <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+  
+  
+  stats_table <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+  
+  # need to place each treatment's mean into it's own column
+  widedf_means <- pivot_wider(stats_table,
+                              names_from = Data_leaftype,
+                              values_from = var_mean) 
+  
+  # create table with just the median values
+  meaansdf <- widedf_means %>% 
+    select(Filenames_filename, SysObs_date, Heated, Unheated, Control) %>%
+    reframe(across(everything(), ~ na.omit(.x))) # reframe instead of summarize
+  
+  meaansdf <-
+    meaansdf %>% 
+    mutate(HCdiff = Control - Heated)
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  
+  plt <-  ggplot(data = meaansdf) +
+    geom_point(aes(x = SysObs_date, y = HCdiff, color = 'Delta'), size = 1) +
+    geom_smooth(aes(x = SysObs_date, y = HCdiff),
+                se=FALSE, col='darkorange', size=1) + #add linear trend line
+    
+    # geom_line(aes(x = SysObs_date, y = Unheated, color = '#619CFF')) +
+    geom_point(aes(x = SysObs_date, y = Heated, color = "Heated"), size = 1) +
+    geom_smooth(aes(x = SysObs_date, y = Heated), se=FALSE, col="#F8766D", size=1) + #add linear trend line
+    
+    geom_point(aes(x = SysObs_date, y = Control, color = "Control"), size = 1) +
+    geom_smooth(aes(x = SysObs_date, y = Control),
+                se=FALSE, col="#00BA38", size=1) + #add linear trend line
+    
+    scale_color_manual(name = plantvariable,
+                       breaks = c('Heated', 'Unheated', 'Control', 'Delta'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF',
+                                  'Control' = '#00BA38', 'Delta' = 'darkorange'),
+                       labels = c('Heated', 'Unheated', 'Control', 'Delta')) +
+    
+    # ggtitle(paste(dispplantvariable[2], "for Elevation", plantlevel, '\n', 'Mean Delta Heated - Control', sep = ' ')) +
+    xlab("Observation Date") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  
+  ggsave(here(FIGSTORAGE, paste(plantlevel, "_", plantvariable, "_HC_delta.png", sep = '')),
+         plot = last_plot(),
+         device = "png",
+         width = 6, height = 4, units = "in")
+  
+  return(plt)
+}
+
+# plot the means for the Heated and Control treatments
+plot_delta_unheated_control_means <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+  
+  stats_table <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+  
+  # need to place each treatment's mean into it's own column
+  widedf_means <- pivot_wider(stats_table,
+                              names_from = Data_leaftype,
+                              values_from = var_mean) 
+  
+  # create table with just the median values
+  meansdf <- widedf_means %>% 
+    select(Filenames_filename, SysObs_date, Heated, Unheated, Control) %>%
+    reframe(across(everything(), ~ na.omit(.x))) # reframe instead of summarize
+  
+  meansdf <-
+    meansdf |> 
+    mutate(HCdiff = Control - Unheated)
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  
+ plt <-  ggplot(data = meansdf) +
+    geom_point(aes(x = SysObs_date, y = HCdiff, color = 'Delta'), size=1) +
+    geom_smooth(aes(x = SysObs_date, y = HCdiff), se=FALSE, col='darkorange', size=1) + #add linear trend line
+    
+    # geom_line(aes(x = SysObs_date, y = Unheated, color = '#619CFF')) +
+    geom_point(aes(x = SysObs_date, y = Unheated, color = 'Unheated'), size=1) +
+    geom_smooth(aes(x = SysObs_date, y = Unheated), se=FALSE, col="#619CFF", size=0.75) + #add linear trend line
+    
+    geom_point(aes(x = SysObs_date, y = Control, color = 'Control'), size=1) +
+    geom_smooth(aes(x = SysObs_date, y = Control), se=FALSE, col="#00BA38", size=0.75) + #add linear trend line
+    
+    scale_color_manual(name = plantvariable,
+                       breaks = c('Heated', 'Unheated', 'Control', 'Delta'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38', 'Delta' = 'darkorange'),
+                       labels = c('Heated', 'Unheated', 'Control', 'Delta')) +
+    # ggtitle(paste(dispplantvariable[2], "for Elevation", plantlevel, '\n', 'Mean Delta Unheated - Control', sep = ' ')) +
+    xlab("Observation Date") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  
+       ggsave(here(FIGSTORAGE, paste(plantlevel, "_", plantvariable, "_UC_delta.png", sep = '')),
+              plot = last_plot(),
+           device = "png",
+           width = 6, height = 4, units = "in")
+       
+       return(plt)
+  
+}
+```
+## Delta Plots by Treatment For Variables of Interest
+
+## GasEx_A
+
+```{r}
+#| label: delta_GasEx_A
+#| echo: false
+#| warning: false
+
+plt <- plot_delta_heated_control_means(finaldata, LICOR_variables, ELEVATION, "GasEx_A")
+print(plt)
+plt <- plot_delta_unheated_control_means(finaldata, LICOR_variables, ELEVATION, "GasEx_A")
+print(plt)
+plt <- plot_delta_heat_unheated_means(finaldata, LICOR_variables, ELEVATION, "GasEx_A")
+print(plt)
+
+
+```
+## GasEx_gsw
+
+```{r}
+#| label: delta_GasEx_gsw
+#| warning: false
+
+plot_delta_heated_control_means(finaldata, LICOR_variables, ELEVATION, "GasEx_gsw")
+plot_delta_unheated_control_means(finaldata, LICOR_variables, ELEVATION, "GasEx_gsw")
+plot_delta_heat_unheated_means(finaldata, LICOR_variables, ELEVATION, "GasEx_gsw")
+
+
+```
+```{r}
+
+rp_ANOVA_plantvar_by_exp_means <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+
+  # # START testing !!!!!!!!!!!!!!!!!!!!!!!
+  plantdata <- finaldata
+  # # LICOR_variables
+  plantlevel <- 2
+  # # plantvariable <- "GasEx_gsw"
+    plantvariable <- "GasEx_A"
+  # 
+  # # END testing !!!!!!!!!!!!!!!!!!!!!!!
+
+  
+  stats_table <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+  
+  # need to place each treatment's mean into it's own column
+  widedf_means <- pivot_wider(stats_table,
+                              names_from = Data_leaftype,
+                              values_from = var_mean) 
+  
+  # create table with just the median values
+  meansdf <- widedf_means %>% 
+    select(Filenames_filename, SysObs_date, Heated, Unheated, Control) %>%
+    reframe(across(everything(), ~ na.omit(.x))) # reframe instead of summarize
+  
+  
+  
+}
+
+
+# plot the means for the Heated and Control treatments
+plot_plantvar_by_exp_means <- function(plantdata, LICOR_variables, plantlevel, plantvariable) {
+
+  # # START testing !!!!!!!!!!!!!!!!!!!!!!!
+  plantdata <- finaldata
+  # # LICOR_variables
+  plantlevel <- 2
+  # # plantvariable <- "GasEx_gsw"
+    plantvariable <- "GasEx_A"
+  # 
+  # # END testing !!!!!!!!!!!!!!!!!!!!!!!
+
+  
+  stats_table <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+  
+  # need to place each treatment's mean into it's own column
+  widedf_means <- pivot_wider(stats_table,
+                              names_from = Data_leaftype,
+                              values_from = var_mean) 
+  
+  # create table with just the median values
+  meansdf <- widedf_means %>% 
+    select(Filenames_filename, SysObs_date, Heated, Unheated, Control) %>%
+    reframe(across(everything(), ~ na.omit(.x))) # reframe instead of summarize
+  
+  meansdf <-
+    meansdf |> 
+    mutate(HCdiff = Heated - Unheated)
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  
+  plt <-
+    ggplot(data = meansdf) +
+    # geom_point(aes(x = SysObs_date, y = HCdiff, color = 'Delta'), size=2) +
+    # geom_smooth(aes(x = SysObs_date, y = HCdiff), se=FALSE, col='darkorange',
+    #             size=1, linetype = "solid") + #add linear trend line
+    
+    # geom_line(aes(x = SysObs_date, y = Unheated, color = '#619CFF')) +
+    geom_point(aes(x = SysObs_date, y = Heated, color = 'Heated'), shape = 18, size=3) +
+    geom_smooth(aes(x = SysObs_date, y = Heated), se=FALSE, col="#F8766D",
+                size=1, linetype = "longdash") + #add linear trend line
+    
+    geom_point(aes(x = SysObs_date, y = Unheated, color = 'Unheated'), shape = 1, size=2) +
+    geom_smooth(aes(x = SysObs_date, y = Unheated), se=FALSE, col="#619CFF",
+                size=1, linetype = "twodash") + #add linear trend line
+      
+      geom_point(aes(x = SysObs_date, y = Control, color = 'Control'), shape = 17, size=2) +
+      geom_smooth(aes(x = SysObs_date, y = Control), se=FALSE, col="#00BA38",
+                  size=1, linetype = "twodash") + #add linear trend line
+      
+    theme_bw() +
+    scale_color_manual(name = plantvariable,
+                       breaks = c('Heated', 'Unheated', 'Control', 'Delta'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38', 'Delta' = 'darkorange'),
+                       labels = c('Heated', 'Unheated', 'Control', 'Delta')) +
+    # ggtitle(paste(dispplantvariable[2], "for Elevation", plantlevel, '\n', 'Mean Delta Heated - Unheated', sep = ' ')) +
+    xlab("Observation Date") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = ''))
+  
+  ggsave(here(FIGSTORAGE, paste("var_exp_", plantlevel, "_", plantvariable, ".png", sep = '')),
+         plot = last_plot(),
+         device = "png",
+         width = 6, height = 4, units = "in")
+  
+  return(plt)
+
+}
+plantlevel <- 2
+plot_plantvar_by_exp_means(finaldata, LICOR_variables, plantlevel, "GasEx_A")
+plot_plantvar_by_exp_means(finaldata, LICOR_variables, plantlevel, "GasEx_gsw")
+plot_plantvar_by_exp_means(finaldata, LICOR_variables, plantlevel, "GasEx_Emm")
+plot_plantvar_by_exp_means(finaldata, LICOR_variables, plantlevel, "GasEx_VPDleaf")
+
+plantlevel <- 3
+plot_plantvar_by_exp_means(plantdata, LICOR_variables, plantlevel, "GasEx_A")
+plot_plantvar_by_exp_means(plantdata, LICOR_variables, plantlevel, "GasEx_gsw")
+plot_plantvar_by_exp_means(plantdata, LICOR_variables, plantlevel, "GasEx_Emm")
+plot_plantvar_by_exp_means(plantdata, LICOR_variables, plantlevel, "GasEx_VPDleaf") 
+
+plantlevel <- 1
+plot_plantvar_by_exp_means(plantdata, LICOR_variables, plantlevel, "GasEx_A")
+plot_plantvar_by_exp_means(plantdata, LICOR_variables, plantlevel, "GasEx_gsw")
+plot_plantvar_by_exp_means(plantdata, LICOR_variables, plantlevel, "GasEx_Emm")
+plot_plantvar_by_exp_means(plantdata, LICOR_variables, plantlevel, "GasEx_VPDleaf") 
+
+```
+
+
+# Plot Raw Data  
+Plots of data by each treatment for one experiment and variable of interest.  
+```{r plot_raw_variable_point}
+#| warning: false
+
+
+plot_raw_variable_point <- function(plantdata, LICOR_variables, plantlevel, plantvariable, treatment)  {
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  # df_summary <- create_variable_statistics(plantdata, plantlevel, plantvariable)
+  
+  selecteddata <- plantdata %>%
+    filter(Data_leaftype == treatment)
+  
+  pvp <- ggplot(data = selecteddata, 
+                aes(x = SysObs_date, y = get(plantvariable), color = Data_leaftype)) + 
+    geom_point(size = 2) +
+    geom_smooth() +
+    # geom_errorbar(aes(x = SysObs_date, ymin = var_mean - var_sd, ymax = var_mean + var_sd),
+    #               width = 0.2, color = 'black') +
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38'),
+                       labels = c('Heated', 'Unheated', 'Control')) +
+    geom_point(size = 2) +
+    ggtitle(paste(dispplantvariable[2], "Elevation", ELEVATION, sep = ' ')) +
+    xlab("Leaf") +
+    ylab(paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = '')) +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1))
+  
+  return(pvp)
+}
+```
+
+
+
+```{r}
+#| label: TESTING
+#| warning: false
+#| echo: false
+#| error: false
+
+# ----------------  TESTING  ------------------
+
+
+trend_plots <- function(plantdata, LICOR_variables, plantlevel, d.begin, d.end, plantvariable) {
+  
+  title_begin <- format.Date(d.begin, "%D")
+  title_end <- format.Date(d.end, "%D")
+  subtitle <- paste(title_begin, "-", title_end)
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  
+  plantdata <- finaldata %>%
+    filter(Data_plant_id == plantlevel)
+  
+  # all data for one level and one plant variable for entire data set
+  ggplot(plantdata, aes(SysObs_date, 
+                        get(plantvariable), 
+                        color = Data_leaftype)) +
+    geom_point(size = 0.75) +
+    geom_smooth(linewidth = 1,  se = FALSE)+
+    
+    theme_bw() +
+    # labs(
+    #   title = paste("Level ", plantlevel, ", LI-COR Variable: ", dispplantvariable[2], sep = ''),
+    #   subtitle = subtitle,
+    #   caption = "Data collected in Biosphere 2 rainforest biome.",
+    #   tag = "Figure 1",
+    #   x = "Observation Date (weeks)",
+    #   y = paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = '')
+    # ) +
+    # theme(panel.background = element_blank(),
+    #       axis.text.x = element_text(angle = 60, hjust = 1)) +
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38'),
+                       labels = c('Heated', 'Unheated', 'Control')) +
+    # coord_cartesian(ylim = c(0,2)) +
+    facet_wrap(vars(Data_leaftype), ncol = 2)
+  
+     ggsave(here(FIGSTORAGE, paste(plantlevel, "_", plantvariable, "_trends.png", sep = '')),
+           device = "png",
+           width = 6, height = 4, units = "in")
+  }
+
+```
+
+
+
+```{r}
+#| warning: false
+#| echo: false
+#| error: false
+
+# pick ONE level of interest
+ELEVATION <- 2
+
+
+# initial order, needs changed based on stats function as needed
+finaldata$Data_leaftype <- factor(finaldata$Data_leaftype,
+                                  levels = c('Heated','Unheated', 'Control'),
+                                  ordered = TRUE)
+
+d.begin <- "2023-11-17"
+d.end <- "2024-05-08"
+
+plantdata <- finaldata %>%
+  filter(Data_plant_id == ELEVATION &
+           SysObs_date >= as.Date(d.begin) & 
+           SysObs_date <= as.Date(d.end))
+
+
+lapply(LICORVARS, 
+       trend_plots, 
+       plantdata=plantdata, 
+       LICOR_variables=LICOR_variables, 
+       plantlevel=ELEVATION,
+       d.begin = d.begin,
+       d.end = d.end)
+
+```
+
+
+```{r}
+#| warning: false
+#| echo: false
+#| error: false
+
+# DATA ENCODED AS 1 FOR FIRST EXPERIMENT ON LEVEL 3
+ELEVATION <- 1
+
+# initial order, needs changed based on stats function as needed
+finaldata$Data_leaftype <- factor(finaldata$Data_leaftype,
+                                  levels = c('Heated','Unheated', 'Control'),
+                                  ordered = TRUE)
+
+# levle 3, first 1st experiment
+d.begin <- "2023-11-29"
+d.end <- "2024-03-20"
+
+plantdata <- finaldata %>%
+  filter(Data_plant_id == ELEVATION &
+           SysObs_date >= as.Date(d.begin) & 
+           SysObs_date <= as.Date(d.end))
+
+lapply(LICORVARS, 
+       trend_plots, 
+       plantdata=plantdata, 
+       LICOR_variables=LICOR_variables, 
+       plantlevel=ELEVATION,
+       d.begin = d.begin,
+       d.end = d.end)
+
+
+# DATA ENCODED AS 3 FOR SECOND EXPERIMENT ON LEVEL 3
+
+ELEVATION <- 3
+
+# level 3, 2nd experiment
+d.begin <- "2024-04-03"
+d.end <- "2024-05-08"
+
+plantdata <- finaldata %>%
+  filter(Data_plant_id == ELEVATION &
+           SysObs_date >= as.Date(d.begin) & 
+           SysObs_date <= as.Date(d.end))
+
+lapply(LICORVARS, 
+       trend_plots, 
+       plantdata=plantdata, 
+       LICOR_variables=LICOR_variables, 
+       plantlevel=ELEVATION,
+       d.begin = d.begin,
+       d.end = d.end)
+
+```
+
+
+```{r treatment_statistics}
+#| warning: false
+#| echo: false
+#| error: false
+
+# given dunnets object, output data in CSV format
+build_tukey_df <- function(tukey_data, tk, plantvar, ELEVATION, trans) {
+# EXAMPLE  
+#     Tukey multiple comparisons of means
+#     95% family-wise confidence level
+# 
+# Fit: aov(formula = plantdata[[plantvar]] ~ Data_leaftype, data = plantdata)
+# 
+# $Data_leaftype
+#                          diff           lwr          upr     p adj
+# Heated-Control   -0.022549333 -0.0282724116 -0.016826254 0.0000000
+# Unheated-Control -0.017936345 -0.0231197056 -0.012752985 0.0000000
+# Unheated-Heated   0.004612988 -0.0007340769  0.009960053 0.1050957
+  
+  
+
+  # this would have been the better way to handle this
+  # hacked in to ensure correct comparisons are being recorded
+  tk_df <- tk[["Data_leaftype"]]
+  roundval <- 6
+
+  # EXPERIMENT 3-1
+  if (trans == "LOG") {
+    # LOG data needs back transformed using EXP
+    exp.diff = round(exp(tk[["Data_leaftype"]][1,"diff"]),roundval)
+    exp.lwr.ci = round(exp(tk[["Data_leaftype"]][1, "lwr"]),roundval)
+    exp.upr.ci = round(exp(tk[["Data_leaftype"]][1, "upr"]),roundval)
+  } else {
+    # not LOG transformed, set the data to the same as non-transformed
+    # this simplifies analysis as these columns always contain
+    # the data that is in the correct units
+    # exp.diff = tk[["Data_leaftype"]][1,"diff"]
+    # exp.lwr.ci = tk[["Data_leaftype"]][1, "lwr"]
+    # exp.upr.ci = tk[["Data_leaftype"]][1, "upr"]
+    exp.diff = NA
+    exp.lwr.ci = NA
+    exp.upr.ci = NA
+  }
+  
+  tukey_data <- tukey_data %>% 
+    add_row(Variable = plantvar,
+            Level = ELEVATION,
+            Transformation = as.character(trans),
+            TreatComp = rownames(tk_df)[1],
+            diff = as.character(round(tk[["Data_leaftype"]][1,"diff"],roundval)),
+            lwr.ci = round(tk[["Data_leaftype"]][1, "lwr"],roundval),
+            upr.ci = round(tk[["Data_leaftype"]][1, "upr"],roundval),
+            exp.diff,
+            exp.lwr.ci,
+            exp.upr.ci,
+            pval = as.character(round(tk[["Data_leaftype"]][1, "p adj"],roundval)))
+  
+  # EXPERIMENT 2
+  if (trans == "LOG") {
+    # LOG data needs back transformed using EXP
+    exp.diff = round(exp(tk[["Data_leaftype"]][2,"diff"]),roundval)
+    exp.lwr.ci = round(exp(tk[["Data_leaftype"]][2, "lwr"]),roundval)
+    exp.upr.ci = round(exp(tk[["Data_leaftype"]][2, "upr"]),roundval)
+  } else {
+    # not LOG transformed, set the data to the same as non-transformed
+    # this simplifies analysis as these columns always contain
+    # the data that is in the correct units
+    # exp.diff = tk[["Data_leaftype"]][1,"diff"]
+    # exp.lwr.ci = tk[["Data_leaftype"]][1, "lwr"]
+    # exp.upr.ci = tk[["Data_leaftype"]][1, "upr"]
+    exp.diff = NA
+    exp.lwr.ci = NA
+    exp.upr.ci = NA
+  }
+  
+  
+  tukey_data <- tukey_data %>% 
+    add_row(Variable = plantvar,
+            Level = ELEVATION,
+            Transformation = as.character(trans),
+            TreatComp = rownames(tk_df)[2],
+            diff = as.character(round(tk[["Data_leaftype"]][2,"diff"],roundval)),
+            lwr.ci = round(tk[["Data_leaftype"]][2, "lwr"],roundval),
+            upr.ci = round(tk[["Data_leaftype"]][2, "upr"],roundval),
+            exp.diff,
+            exp.lwr.ci,
+            exp.upr.ci,
+            pval = as.character(round(tk[["Data_leaftype"]][2, "p adj"],roundval)))
+     
+  
+  # EXPERIMENT 3-2
+  if (trans == "LOG") {
+    # LOG data needs back transformed using EXP
+    exp.diff = round(exp(tk[["Data_leaftype"]][3,"diff"]),roundval)
+    exp.lwr.ci = round(exp(tk[["Data_leaftype"]][3, "lwr"]),roundval)
+    exp.upr.ci = round(exp(tk[["Data_leaftype"]][3, "upr"]),roundval)
+  } else {
+    # not LOG transformed, set the data to the same as non-transformed
+    # this simplifies analysis as these columns always contain
+    # the data that is in the correct units
+    # exp.diff = tk[["Data_leaftype"]][1,"diff"]
+    # exp.lwr.ci = tk[["Data_leaftype"]][1, "lwr"]
+    # exp.upr.ci = tk[["Data_leaftype"]][1, "upr"]
+    exp.diff = NA
+    exp.lwr.ci = NA
+    exp.upr.ci = NA
+  }
+  
+  
+  tukey_data <- tukey_data %>% 
+    add_row(Variable = plantvar,
+            Level = ELEVATION,
+            Transformation = as.character(trans),
+            TreatComp = rownames(tk_df)[3],
+            diff = as.character(round(tk[["Data_leaftype"]][3,"diff"],roundval)),
+            lwr.ci = round(tk[["Data_leaftype"]][3, "lwr"],roundval),
+            upr.ci = round(tk[["Data_leaftype"]][3, "upr"],roundval),
+            exp.diff,
+            exp.lwr.ci,
+            exp.upr.ci,
+            pval = as.character(round(tk[["Data_leaftype"]][3, "p adj"],roundval)))
+  
+  
+  return(tukey_data)
+}
+
+build_anova_df <- function(anova_data, model, plantvar, ELEVATION, catvar, b, transf) {
+# > sum_test = unlist(summary(model))
+# > names(sum_test)
+#  [1] "Df1"      "Df2"      "Sum Sq1"  "Sum Sq2"  "Mean Sq1" "Mean Sq2" "F value1" "F value2" "Pr(>F)1"  "Pr(>F)2" 
+
+# report: (F(between groups df, within groups df) = [F-value], p = [p-value])
+  
+model_vars = unlist(summary(model))
+roundval <- 6
+# model_vars["Pr(>F)1"]
+  
+  anova_data <- anova_data %>% 
+    add_row(Variable = plantvar,
+            Trans = transf,
+            Level = ELEVATION,
+            CatVar = catvar,
+            
+            Df1 = round(as.double(model_vars["Df1"]),roundval),
+            SumSq1 = round(as.double(model_vars["Sum Sq1"]),roundval),
+            MeanSq1 = round(as.double(model_vars["Mean Sq1"]),roundval),
+            Fvalue1 = round(as.double(model_vars["F value1"]),roundval),
+            Prgtf1 = round(as.double(model_vars["Pr(>F)1"]),roundval),
+            
+            Df2 = round(as.double(model_vars["Df2"]),roundval),
+            SumSq2 = round(as.double(model_vars["Sum Sq2"]),roundval),
+            MeanSq2 = round(as.double(model_vars["Mean Sq2"]),roundval),
+            Fvalue2 = round(as.double(model_vars["F value2"]),roundval),
+            Prgtf2 = round(as.double(model_vars["Pr(>F)2"]),roundval),
+            
+            BartK.squared = round(as.double(b$statistic),roundval),
+            Bartdata.name = as.character(b$data.name),
+            BartDF1 = round(as.double(b$parameter['df']),roundval),
+            Bartpval = round(as.double(b$p.value),roundval)
+            )
+  
+  return(anova_data)
+}
+
+# !!! this is no longer in use, this short circuits building the table
+# and keeps the rest of the code from being refactored
+# # given dunnets object, output data in CSV format
+build_dunnetts_df <- function(dunnetts_data, d, plantvar, ELEVATION, trans) {
+# 
+#     # this would have been the better way to handle this
+#   # hacked in to ensure correct comparisons are being recorded
+#   dun_df <- dunnetts_data[["Data_leaftype"]]
+#   
+#  dunnetts_data <- dunnetts_data %>% 
+#     add_row(Variable = plantvar,
+#             Level = ELEVATION,
+#             Transformation = as.character(trans),
+#             TreatComp = dun_df[1,]$TreatComp,
+#             diff = as.character(d$Control[1,"diff"]),
+#             lwr.ci = d$Control[1,"lwr.ci"],
+#             upr.ci = d$Control[1,"upr.ci"],
+#             pval = as.character(d$Control[1,"pval"]))
+#   
+#   dunnetts_data <- dunnetts_data %>%
+#     add_row(Variable = plantvar,
+#             Level = ELEVATION,
+#             Transformation = as.character(trans),
+#             TreatComp = dun_df[2,]$TreatComp,
+#             diff = as.character(d$Control[2,"diff"]),
+#             lwr.ci = d$Control[2,"lwr.ci"],
+#             upr.ci = d$Control[2,"upr.ci"],
+#             pval = as.character(d$Control[2,"pval"]))
+#   
+  return(dunnetts_data)
+# 
+#   
+}
+```
+
+```{r descriptive_stats}
+#| warning: false
+#| echo: false
+#| error: false
+
+ build_descriptive_stats <- function(plantdata, plantvar, ELEVATION, trans, descriptive_stats) {
+
+   # create summary stats for each treatment and variable of interest
+   # easier to convert table to df for building descriptive df
+   # as.data.frame(summary(plantdata[plantdata$Data_leaftype == 'Unheated' , c('Data_leaftype', 'GasEx_A')]))
+   # as.data.frame(summary(plantdata[plantdata$Data_leaftype == 'Unheated' , c('Data_leaftype', plantvar)]))
+   # dstats <- as.data.frame(summary(plantdata[plantdata$Data_leaftype == 'Unheated' , LICORVARS]))
+   
+   # grab descriptive stats for all LICORVARS
+   # each result is a string with label and value within " " for each LICORVARS
+   # EXAMPLE
+   #       GasEx_A            GasEx_gsw            GasEx_Emm        GasEx_VPDleaf 
+   # "Min.   :0.5143  " "Min.   :0.006463  "   "Min.   :0.1064  "    "Min.   :1.300  " 
+   dstats <- summary(plantdata[plantdata$Data_leaftype == 'Unheated' , LICORVARS])
+   
+   # EXAMPLE
+   #     GasEx_A            GasEx_gsw            GasEx_Emm        GasEx_VPDleaf 
+   # "Min.   :0.5143  " "Min.   :0.006463  "   "Min.   :0.1064  "    "Min.   :1.300  "    
+   # indexes of min = 1, median = 3, mean = 4, max = 6
+   # use min[1] for the first variables in LICORVARS min, etc.\
+   min <- dstats[1,]
+   median <- dstats[3,]
+   mean <- dstats[4,]
+   max <- dstats[6,]
+   
+   # get counts for all variables of interest by treatment
+   # use N[1] syntax to access value for first element in LICORVARS
+   # EXAMPLE
+   #      GasEx_A     GasEx_gsw     GasEx_Emm GasEx_VPDleaf 
+          # 120           120           120           120 
+   N <- sapply(plantdata[plantdata$Data_leaftype == 'Unheated' , LICORVARS], length)
+
+   # use SD[1] syntax to access SD for first element in LICORVARS
+   # EXAMPLE
+   #   GasEx_A     GasEx_gsw     GasEx_Emm GasEx_VPDleaf 
+   # 0.96122342    0.01675107    0.41210323    0.47207146 
+   SD <- sapply(plantdata[plantdata$Data_leaftype == 'Unheated' , LICORVARS], sd, na.rm=TRUE)
+ 
+   descriptive_stats <- descriptive_stats %>% 
+    add_row(Variable = plantvar,
+            Trans = transf,
+            Level = ELEVATION,
+            CatVar = catvar,
+            
+            Df1 = round(as.double(model_vars["Df1"]),roundval),
+            SumSq1 = round(as.double(model_vars["Sum Sq1"]),roundval),
+            MeanSq1 = round(as.double(model_vars["Mean Sq1"]),roundval),
+            Fvalue1 = round(as.double(model_vars["F value1"]),roundval),
+            Prgtf1 = round(as.double(model_vars["Pr(>F)1"]),roundval),
+            
+            Df2 = round(as.double(model_vars["Df2"]),roundval),
+            SumSq2 = round(as.double(model_vars["Sum Sq2"]),roundval),
+            MeanSq2 = round(as.double(model_vars["Mean Sq2"]),roundval),
+            Fvalue2 = round(as.double(model_vars["F value2"]),roundval),
+            Prgtf2 = round(as.double(model_vars["Pr(>F)2"]),roundval),
+            
+            BartK.squared = round(as.double(b$statistic),roundval),
+            Bartdata.name = as.character(b$data.name),
+            BartDF1 = round(as.double(b$parameter['df']),roundval),
+            Bartpval = round(as.double(b$p.value),roundval)
+            )
+  
+  return(anova_data)
+   
+ }
+
+```
+
+```{r vaiable_analysis}
+#| warning: false
+#| echo: false
+#| error: false
+#| 
+leaf_variable_stats <- function(plantdata, ELEVATION, plantvar, rawplantvar, dunnetts_data, tukey_data, anova_data) {
+  
+  # A one-way ANOVA is used to determine whether or not there is a statistically
+  # significant difference between the means of three or more independent groups.
+  # fit the one-way ANOVA model
+  model <- aov(plantdata[[plantvar]] ~ Data_leaftype, data = plantdata)
+  print(summary(model))
+
+  # # repeated measures ANOVA
+  # plantvar <- "GasEx_gsw"
+  # model <- aov(plantdata[[plantvar]] ~ factor(Data_leaftype) + Error(factor(Data_plant_id)), data = plantdata)
+  #       print(summary(model))
+
+  # test data normally distributed and equal variance
+  plot(model, which = 1)
+  # If the p-value in the ANOVA output is less than .05, 
+  # we reject the null hypothesis. This tells us that the mean value 
+  # between each group is not equal. However, it doesn’t tell us 
+  # which groups differ from each other.
+  
+  # check assumptions
+  
+  # Assumption #1: Data from Normal distribution
+  # robust against assumption if sample size is large enough
+  # or try transformations on the original data
+  # Could perform Shapiro-Wilk Test if needed
+  # create histogram
+  # original raw data
+  # hist(plantdata[[rawplantvar]])  # - OR -
+  # compare to possibly transformed data
+  hist(plantdata[[plantvar]],
+       main = paste("Histogram of" , plantvar)) 
+  # - OR -
+  # create Q-Q plot of residuals to compare the dataset to a theoretical normal distribution 
+  qqnorm(model$residuals)
+  #add straight diagonal line to plot
+  qqline(model$residuals)
+  
+  # Assumption #2: Equal Variance
+  # Create box plots that show distribution of plant variable for each Data_leaftype
+  # robust about assumption if each group has same sample size
+  p <- plot_variable_boxplot(plantdata, LICOR_variables, ELEVATION, plantvar)
+  print(p)
+
+  # boxplot(plantdata[[plantvar]] ~ Data_leaftype, xlab='Data_leaftype', ylab=plantvar, data=plantdata)
+  # Peform bartlett test if visaul is not enough
+  b <- bartlett.test(plantdata[[plantvar]] ~ Data_leaftype, data=plantdata)
+  print(b)
+  
+  anova_data <- build_anova_df(anova_data, model, plantvar, ELEVATION, "Data_leaftype", b, 'NA')
+message("bartlett test p value ", b$p.value)
+  
+  # Assumption #3: Independence
+  # Unfortunately, there is very little you can do if this assumption is violated.
+  # Simply put, if the data was collected in a way where the observations
+  # in each group are not independent of observations in other groups, 
+  # or if the observations within each group were not obtained 
+  # through a randomized process, the results of the ANOVA will be unreliable.
+  
+  
+  # POST-HOC TESTS
+  # If the p-value in the ANOVA output is less than .05, 
+  # we reject the null hypothesis. This tells us that the mean value 
+  # between each group is not equal. However, it doesn’t tell us 
+  # which groups differ from each other.
+  
+  #perform Tukey post-hoc test - NOT FOR DATA THAT HAS A CONTROL!
+  # if adjusted p-values is less than .05, we can conclude 
+  # that there is a significant difference in means between each group
+  # TukeyHSD(model)
+  
+  # THE DATA HAS A CONTROL, USE Dunnett's Test
+  # To make the proper comparisons, re-level the factors to have Control first
+  plantdata$Data_leaftype <- factor(plantdata$Data_leaftype,
+                                  levels = c('Control', 'Heated','Unheated'),
+                                  ordered = TRUE)
+
+  #perform Dunnett's Test
+  d <- DunnettTest(plantdata[[plantvar]], plantdata$Data_leaftype) # x=data$score, g=data$technique)
+  print(d)
+  #load multcomp library necessary for using Dunnett's Correction
+  # library(multcomp) #perform comparisons
+  # dc <-  dunnet_comparison <- glht(model, linfct = mcp(Data_leaftype = "Dunnett"))
+  # print(summary(dc))
+  tk <-   TukeyHSD(model, conf.level=.95)
+  print(tk)
+  
+  print("before")
+  print(d)
+  print("after")
+  
+  if (plantvar == rawplantvar) {
+    trans <- "NA"
+    } else {
+      trans <- "LOG"
+    }
+
+  tukey_data <- build_tukey_df(tukey_data, tk, plantvar, ELEVATION, trans)
+  
+  # !!! this is no longer in use, this short circuits building the table
+  # and keeps the rest of the code from being refactored
+  # dunnetts_data <- build_dunnetts_df(dunnetts_data, d, plantvar, ELEVATION, trans)
+  dunnetts_data <- dunnetts_data
+  
+  return(list(dunnetts_data, tukey_data, anova_data))
+  
+}
+
+
+```
+
+```{r create_stats_df}
+#| warning: false
+#| echo: false
+#| error: false
+
+# perform ANOVA but use log() transformation in AOV function
+# data can be put back in original units using delta method
+leaf_variable_stats_log_transform <- function(plantdata, ELEVATION, rawplantvar, plantvar, dunnetts_data, tukey_data, anova_data) {
+
+  # A one-way ANOVA is used to determine whether or not there is a statistically
+  # significant difference between the means of three or more independent groups.
+  # fit the one-way ANOVA model
+
+  # -- this is the log() of the originao data in the model
+  #    this is needed to be able to perform the delta back transformation
+  #    to get original unit data
+  model <- aov(log(plantdata[[rawplantvar]]) ~ Data_leaftype, data = plantdata)
+  print(summary(model))
+
+  # test data normally distributed and equal variance
+  plot(model, which = 1)
+  # If the p-value in the ANOVA output is less than .05,
+  # we reject the null hypothesis. This tells us that the mean value
+  # between each group is not equal. However, it doesn’t tell us
+  # which groups differ from each other.
+
+  # check assumptions
+
+  # Assumption #1: Data from Normal distribution
+  # robust against assumption if sample size is large enough
+  # or try transformations on the original data
+  # Could perform Shapiro-Wilk Test if needed
+  # create histogram
+  # original raw data
+  # hist(log(plantdata[[rawplantvar]],
+  #             main = paste("Histogram of LOG ", plantvar)))
+   hist(log(plantdata[[plantvar]]),
+       main = paste("Histogram of LOG" , plantvar)) 
+  # - OR -
+  # compare to possibly transformed data
+  # hist(plantdata[[plantvar]])
+  # - OR -
+    # create Q-Q plot of residuals to compare the dataset to a theoretical normal distribution
+  qqnorm(model$residuals)
+  #add straight diagonal line to plot
+  qqline(model$residuals)
+
+  # Assumption #2: Equal Variance
+  # Create box plots that show distribution of plant variable for each Data_leaftype
+  # robust about assumption if each group has same sample size
+  p <- plot_variable_boxplot(plantdata, LICOR_variables, ELEVATION, rawplantvar)
+  print(p)
+
+  boxplot(log(plantdata[[rawplantvar]]) ~ Data_leaftype, xlab='Data_leaftype', ylab=plantvar, data=plantdata)
+  # Peform bartlett test if visaul is not enough
+  b <- bartlett.test(log(plantdata[[rawplantvar]]) ~ Data_leaftype, data=plantdata)
+  print(b)
+  
+  anova_data <- build_anova_df(anova_data, model, rawplantvar, ELEVATION, "Data_leaftype", b, 'LOG')
+message("bartlett test p value ", b$p.value)
+  
+  # Assumption #3: Independence
+  # Unfortunately, there is very little you can do if this assumption is violated.
+  # Simply put, if the data was collected in a way where the observations
+  # in each group are not independent of observations in other groups, 
+  # or if the observations within each group were not obtained 
+  # through a randomized process, the results of the ANOVA will be unreliable.
+  
+  
+  # POST-HOC TESTS
+  # If the p-value in the ANOVA output is less than .05, 
+  # we reject the null hypothesis. This tells us that the mean value 
+  # between each group is not equal. However, it doesn’t tell us 
+  # which groups differ from each other.
+  
+  #perform Tukey post-hoc test - NOT FOR DATA THAT HAS A CONTROL!
+  # if adjusted p-values is less than .05, we can conclude 
+  # that there is a significant difference in means between each group
+  # TukeyHSD(model)
+  
+  # THE DATA HAS A CONTROL, USE Dunnett's Test
+  # To make the proper comparisons, re-level the factors to have Control first
+  plantdata$Data_leaftype <- factor(plantdata$Data_leaftype,
+                                  levels = c('Control', 'Heated','Unheated'),
+                                  ordered = TRUE)
+
+  #perform Dunnett's Test
+  d <- DunnettTest(log(plantdata[[rawplantvar]]), plantdata$Data_leaftype) # x=data$score, g=data$technique)
+  print(d)
+  #load multcomp library necessary for using Dunnett's Correction
+  # library(multcomp) #perform comparisons
+  # dc <-  dunnet_comparison <- glht(model, linfct = mcp(Data_leaftype = "Dunnett"))
+  # print(summary(dc))
+  tk <- TukeyHSD(model, conf.level=.95)
+  print(tk)
+  
+  print("before")
+  print(d)
+  print("after")
+  
+ 
+
+  tukey_data <- build_tukey_df(tukey_data, tk, rawplantvar, ELEVATION, "LOG")   
+  # dunnetts_data <- build_dunnetts_df(dunnetts_data, d, rawplantvar, ELEVATION, "AOV_LOG")   
+  
+  return(list(dunnetts_data, tukey_data, anova_data))
+
+  
+}
+
+# create discriptive statistics of each treatment for given plant data (experiment)
+# descriptive_stats <- build_descriptive_stats(plantdata, descriptive_stats)
+```
+
+```{r}
+#| warning: false
+#| echo: false
+#| error: false
+# perform repeated measures ANOVA for a given variable
+repeated_measures_ANOVA <- function (plantdata, plantvar) {
+  # repeated measures ANOVA
+  # plantvar <- "GasEx_gsw"
+  
+  print(paste("------------ ANALYSIS FOR VARIABLE ", plantvar, "------------", sep = ''))
+  exp2 <- plantdata %>%
+    filter(Data_plant_id == "2")
+  exp1 <- plantdata %>%
+    filter(Data_plant_id == "1")
+  exp3 <- plantdata %>%
+    filter(Data_plant_id == "3")
+  
+  # print("one-way ANOVA")
+  # model <- aov(plantdata[[plantvar]] ~ factor(Data_leaftype), data = plantdata)
+  # print(summary(model))
+  
+  print("exp 2 one-way ANOVA")
+  model <- aov(exp2[[plantvar]] ~ factor(Data_leaftype), data = exp2)
+  print(summary(model))
+  
+  print("exp 3-1 one-way ANOVA")
+  model <- aov(exp1[[plantvar]] ~ factor(Data_leaftype), data = exp1)
+  print(summary(model))
+
+   print("exp 3-2 one-way ANOVA")
+  model <- aov(exp3[[plantvar]] ~ factor(Data_leaftype), data = exp3)
+  print(summary(model)) 
+    
+  print("repeated measures ANOVA")
+  rmmodel <- aov(plantdata[[plantvar]] ~ factor(Data_leaftype) + Error(factor(Data_plant_id)), data = plantdata)
+  print(summary(rmmodel))
+
+  # ___________ pairwise t-tests ___________ 
+  #perform pairwise t-tests with Bonferroni's correction
+  print("exp 2 pairwise t-test with bonferroni correction")
+  print(pairwise.t.test(exp2[[plantvar]], factor(exp2$Data_leaftype), p.adjust.method="bonferroni"))
+  
+  # print("exp2 pairwise t-test")
+  # pairwise.t.test(exp2[[plantvar]], factor(exp2$Data_leaftype))
+  
+    #perform pairwise t-tests with Bonferroni's correction
+  print("exp 3-1 pairwise t-test with bonferroni correction")
+  print(pairwise.t.test(exp1[[plantvar]], factor(exp1$Data_leaftype), p.adjust.method="bonferroni"))
+  # 
+  # print("exp1 pairwise t-test")
+  # pairwise.t.test(exp1[[plantvar]], factor(exp1$Data_leaftype))
+
+      #perform pairwise t-tests with Bonferroni's correction
+  print("exp 3-2 pairwise t-test with bonferroni correction")
+  print(pairwise.t.test(exp3[[plantvar]], factor(exp3$Data_leaftype), p.adjust.method="bonferroni"))
+  # 
+  # print("exp3 pairwise t-test")
+  # pairwise.t.test(exp3[[plantvar]], factor(exp3$Data_leaftype))
+    
+  # #perform pairwise t-tests with Bonferroni's correction
+  # print("ALL airwise t-test with bonferroni correction")
+  # pairwise.t.test(plantdata[[plantvar]], factor(plantdata$Data_leaftype), p.adjust.method="bonferroni")
+# 
+#   print("all pairwise t-test")
+#   pairwise.t.test(plantdata[[plantvar]], factor(plantdata$Data_leaftype))
+  
+  # hcttest2 <- exp2 %>%
+  #   filter(Data_leaftype == "Heated" | Data_leaftype == "Control")
+  # t.test(hcttest2[[plantvar]] ~ hcttest2$Data_leaftype)
+  
+
+}
+
+repeated_measures_ANOVA(finaldata, "GasEx_A")
+repeated_measures_ANOVA(finaldata, "GasEx_gsw")
+repeated_measures_ANOVA(finaldata, "GasEx_Emm")
+repeated_measures_ANOVA(finaldata, "GasEx_VPDleaf")
+
+```
+
+
+```{r}
+#| warning: false
+#| echo: false
+#| error: false
+
+# this is not needed, you can decide based on Tukey results what is important
+# only used to keep from having to refactor the rest of the code
+# # df to store all of the Dunnetts statistics to output in a CSV
+dunnetts_data <- data.frame(
+  Variable = character(),
+  Level = double(),
+  Transformation = character(),
+  TreatComp = character(),
+  diff = character(),
+  lwr.ci = double(),
+  upr.ci = double(),
+  pval = character(),
+  stringsAsFactors = FALSE)
+
+# df to store all of the Tukey statistics to output in a CSV
+tukey_data <- data.frame(
+  Variable = character(),
+  Level = double(),
+  Transformation = character(),
+  TreatComp = character(),
+  diff = character(),
+  lwr.ci = double(),
+  upr.ci = double(),
+  pval = character(),
+  exp.diff = double(),
+  exp.lwr.ci = double(),
+  exp.upr.ci = double(),
+  stringsAsFactors = FALSE)
+
+anova_data <- data.frame(
+  Variable = character(),
+  Trans = character(),
+  Level = double(),
+  CatVar = character(),
+  
+  Df1 = double(),
+  SumSq1 = double(),
+  MeanSq1 = double(),
+  Fvalue1 = double(),
+  Prgtf1 = double(),
+  
+  Df2 = double(),
+  SumSq2 = double(),
+  MeanSq2 = double(),
+  Fvalue2 = double(),
+  Prgtf2 = double(),
+  
+  BartK.squared = double(),
+  Bartdata.name = character(),
+  BartDF1 = double(),
+  Bartpval = double(),
+  stringsAsFactors = FALSE)
+
+```
+### experiment boxplots by variable
+```{r exp_boxplot_by_variable}
+#| warning: false
+#| echo: false
+#| error: false
+# boxplot for each LI-COR variable grouped by experiment
+# stores all at .tif images
+
+boxplot_by_experiment_on_variable <- function(d.begin, d.end, plantvariable) {
+  
+  plantdata <- finaldata %>%
+    filter(
+      SysObs_date >= as.Date(d.begin) & 
+        SysObs_date <= as.Date(d.end))
+  
+  plantdata$Data_plant_id <- recode(plantdata$Data_plant_id, '2' = '2',
+                                    '1'  = '3-1',
+                                    '3' = '3-2')
+  
+  plantdata$Data_plant_id <- factor(plantdata$Data_plant_id,
+                                    levels = c('2','3-1', '3-2'),
+                                    ordered = TRUE)
+  
+  plantdata$Data_leaftype <- factor(plantdata$Data_leaftype,
+                                    levels = c('Heated','Unheated', 'Control'),
+                                    ordered = TRUE)
+  
+  
+  dispplantvariable <- get_variable_properties(LICOR_variables, plantvariable)
+  
+  ylabvar <- paste(dispplantvariable[2], " (", dispplantvariable[3], ")", sep = '')
+  # ylabvar <- dispplantvariable[2]
+  
+  bp <- ggplot(data = plantdata,  
+               aes(x = Data_plant_id , y = get(plantvariable), color = Data_leaftype)) +
+    stat_boxplot(geom ='errorbar', na.rm = TRUE)  +
+    geom_boxplot(outlier.colour = "black", outlier.size = 0.5) +
+    # geom_boxplot(width=0.5) +
+    
+    # geom_line(aes(x = SysObs_date, y = Unheated, color = '#619CFF')) +
+    # geom_point(data = plantdataH, aes(x = SysObs_date, y = get(plantvariable), color = 'Heated'), size=1) +
+    # geom_smooth(data = plantdataH, aes(x = SysObs_date, y = get(plantvariable)), se=FALSE, col="#F8766D", size=0.75) + #add linear trend line
+    # 
+    # geom_point(data = plantdataC, aes(x = SysObs_date, y = get(plantvariable), color = 'Control'), size=1) +
+    # geom_smooth(data = plantdataC, aes(x = SysObs_date, y = get(plantvariable)), se=FALSE, col="#00BA38", size=0.75) + #add linear trend line
+    # 
+    
+    scale_color_manual(name = 'Leaf',
+                       breaks = c('Heated', 'Unheated', 'Control'),
+                       values = c('Heated' = '#F8766D', 'Unheated' = '#619CFF', 'Control' = '#00BA38'),
+                       labels = c('Heated', 'Unheated', 'Control')) +
+    # scale_x_discrete(labels = c('Heated', 'Unheated', 'Control')) +
+    # ggtitle(paste(dispplantvariable[2], "Level", plantlevel, sep = ' ')) +
+    theme_bw() +
+    xlab("Experiment") +
+    ylab(ylabvar)
+  
+  ggsave(here(FIGSTORAGE, paste("experiment_comparison_", plantvariable, "_boxplot.tif", sep = '')),
+         device = "tiff",
+         width = 6, height = 4, units = "in")
+  
+  return(bp)
+}
+
+# use all available data regardless of how long the experiment ran
+# this will ensure all data points are used for each experiment
+d.begin <- "2023-11-17"
+d.end <- "2024-05-08"
+
+# LI-COR variables of interest, plot, store as .tif files
+# TODO put into a loop structure
+plantvariable <- "GasEx_A"
+bp_A <- boxplot_by_experiment_on_variable(d.begin, d.end, plantvariable)
+bp_A
+plantvariable <- "GasEx_gsw"
+bp_gsw <- boxplot_by_experiment_on_variable(d.begin, d.end, plantvariable)
+plantvariable <- "GasEx_VPDleaf"
+bp_VPDleaf <- boxplot_by_experiment_on_variable(d.begin, d.end, plantvariable)
+plantvariable <- "GasEx_Emm"
+bp_Emm <- boxplot_by_experiment_on_variable(d.begin, d.end, plantvariable)
+
+
+bp_final <- bp_A + bp_gsw + bp_Emm + bp_VPDleaf  +
+  # plot_layout(ncol = 2) +
+  plot_layout(guides = 'collect') # +
+  # plot_layout(widths = unit(c(2,2), c('cm', 'null')) ) +
+  # 
+  # plot_layout(heights = unit(c(3, 3), c('cm', 'null')))
+  #                guides = 'collect')
+  # ,
+  # plot_layout(design = "
+  #             12
+  #             34
+  #             ")
+bp_final            
+
+ggsave(here(FIGSTORAGE, paste("experiment_comparison_", "all_vars", "_boxplot.tif", sep = '')),
+       device = "tiff",
+       width = 6, height = 4, units = "in")
+  
+```
+
+
+
+# Explore combinations of plots, ANOVA, Tukey, and other statistics
+Each experiment explored by variables of interest
+
+if data is skewed, fix with log transformation   
+
+## Experiment 2  
+
+```{r}
+#| warning: false
+#| echo: false
+#| error: false
+
+# plantdata$GasEx_A_log <- log(plantdata$GasEx_A)  
+# plantdata$GasEx_A_sqt <- sqrt(plantdata$GasEx_A)  
+# plantdata$GasEx_A_inverse <- 1 / plantdata$GasEx_A  
+
+# --------------------------
+ELEVATION <- 2
+
+d.begin <- "2023-11-17"
+d.end <- "2024-05-08"
+# d.end <- "2024-04-30" # approx time in 2023 light levels increased dramatically
+# d.end <- "2024-03-19" # spring vernal equinox
+
+# initial order, needs changed based on stats function as needed
+finaldata$Data_leaftype <- factor(finaldata$Data_leaftype,
+                                  levels = c('Control', 'Heated','Unheated'),
+                                  ordered = TRUE)
+
+plantdata <- finaldata %>%
+  filter(Data_plant_id == ELEVATION &
+           SysObs_date >= as.Date(d.begin) & 
+           SysObs_date <= as.Date(d.end))
+
+
+rawplantvar <- "GasEx_A"
+plantvar <- rawplantvar
+
+
+leaf_stats <- leaf_variable_stats(plantdata, ELEVATION, plantvar, rawplantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])# # perform log transform in AOV if needed 
+leaf_stats <- leaf_variable_stats_log_transform(plantdata, ELEVATION,
+                                                rawplantvar, plantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+
+
+
+rawplantvar <- "GasEx_gsw"
+plantvar <- rawplantvar
+
+leaf_stats <- leaf_variable_stats(plantdata, ELEVATION, plantvar, rawplantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+# # perform log transform in AOV if needed 
+leaf_stats <- leaf_variable_stats_log_transform(plantdata, ELEVATION,
+                                                rawplantvar, plantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+
+
+
+rawplantvar <- "GasEx_Emm"
+plantvar <- rawplantvar
+
+leaf_stats <- leaf_variable_stats(plantdata, ELEVATION, plantvar, rawplantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+# # perform log transform in AOV if needed 
+leaf_stats <- leaf_variable_stats_log_transform(plantdata, ELEVATION,
+                                                rawplantvar, plantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+
+
+
+rawplantvar <- "GasEx_VPDleaf"
+plantvar <- rawplantvar
+
+leaf_stats <- leaf_variable_stats(plantdata, ELEVATION, plantvar, rawplantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+# # perform log transform in AOV if needed 
+leaf_stats <- leaf_variable_stats_log_transform(plantdata, ELEVATION,
+                                                rawplantvar, plantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+
+
+
+
+```
+
+
+## Experiment 1, level 3, first experiment  
+
+```{r}
+#| warning: false
+#| echo: false
+#| error: false
+# DATA ENCODED AS 1 FOR FIRST EXPERIMENT ON LEVEL 3
+ELEVATION <- 1
+
+# level 3, first 1st experiment
+d.begin <- "2023-11-29"
+d.end <- "2024-03-20"
+
+# initial order, needs changed based on stats function as needed
+finaldata$Data_leaftype <- factor(finaldata$Data_leaftype,
+                                  levels = c('Control', 'Heated','Unheated'),
+                                  ordered = TRUE)
+
+plantdata <- finaldata %>%
+  filter(Data_plant_id == ELEVATION &
+           SysObs_date >= as.Date(d.begin) & 
+           SysObs_date <= as.Date(d.end))
+
+
+rawplantvar <- "GasEx_A"
+plantvar <- rawplantvar
+
+leaf_stats <- leaf_variable_stats(plantdata, ELEVATION, plantvar, rawplantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+# # perform log transform in AOV if needed 
+leaf_stats <- leaf_variable_stats_log_transform(plantdata, ELEVATION,
+                                                rawplantvar, plantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+
+
+
+rawplantvar <- "GasEx_gsw"
+plantvar <- rawplantvar
+
+leaf_stats <- leaf_variable_stats(plantdata, ELEVATION, plantvar, rawplantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+# # perform log transform in AOV if needed 
+leaf_stats <- leaf_variable_stats_log_transform(plantdata, ELEVATION,
+                                                rawplantvar, plantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+
+
+
+rawplantvar <- "GasEx_Emm"
+plantvar <- rawplantvar
+
+leaf_stats <- leaf_variable_stats(plantdata, ELEVATION, plantvar, rawplantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+# # perform log transform in AOV if needed 
+leaf_stats <- leaf_variable_stats_log_transform(plantdata, ELEVATION,
+                                                rawplantvar, plantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+
+
+# log and original produce no change in significance in ANOVA
+rawplantvar <- "GasEx_VPDleaf"
+plantvar <- rawplantvar
+
+leaf_stats <- leaf_variable_stats(plantdata, ELEVATION, plantvar, rawplantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+# # perform log transform in AOV if needed 
+leaf_stats <- leaf_variable_stats_log_transform(plantdata, ELEVATION,
+                                                rawplantvar, plantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+
+```
+
+## Experiment 3, level 3, second experiment  
+
+```{r}
+#| warning: false
+#| echo: false
+#| error: false
+
+# DATA ENCODED AS 3 FOR SECOND EXPERIMENT ON LEVEL 3
+
+ELEVATION <- 3
+
+# level 3, 2nd experiment
+d.begin <- "2024-04-03"
+d.end <- "2024-05-08"
+
+# initial order, needs changed based on stats function as needed
+finaldata$Data_leaftype <- factor(finaldata$Data_leaftype,
+                                  levels = c('Control', 'Heated','Unheated'),
+                                  ordered = TRUE)
+
+plantdata <- finaldata %>%
+  filter(Data_plant_id == ELEVATION &
+           SysObs_date >= as.Date(d.begin) & 
+           SysObs_date <= as.Date(d.end))
+
+rawplantvar <- "GasEx_A"
+plantvar <- rawplantvar
+
+leaf_stats <- leaf_variable_stats(plantdata, ELEVATION, plantvar, rawplantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+# # perform log transform in AOV if needed 
+leaf_stats <- leaf_variable_stats_log_transform(plantdata, ELEVATION,
+                                                rawplantvar, plantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+
+
+rawplantvar <- "GasEx_gsw"
+plantvar <- rawplantvar
+
+leaf_stats <- leaf_variable_stats(plantdata, ELEVATION, plantvar, rawplantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+# # perform log transform in AOV if needed 
+leaf_stats <- leaf_variable_stats_log_transform(plantdata, ELEVATION,
+                                                rawplantvar, plantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+
+
+rawplantvar <- "GasEx_Emm"
+plantvar <- rawplantvar
+
+leaf_stats <- leaf_variable_stats(plantdata, ELEVATION, plantvar, rawplantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+# # perform log transform in AOV if needed 
+leaf_stats <- leaf_variable_stats_log_transform(plantdata, ELEVATION,
+                                                rawplantvar, plantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+
+
+rawplantvar <- "GasEx_VPDleaf"
+plantvar <- rawplantvar
+
+leaf_stats <- leaf_variable_stats(plantdata, ELEVATION, plantvar, rawplantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+# # perform log transform in AOV if needed 
+leaf_stats <- leaf_variable_stats_log_transform(plantdata, ELEVATION,
+                                                rawplantvar, plantvar, dunnetts_data, tukey_data, anova_data)
+dunnetts_data <- as.data.frame(leaf_stats[1])
+tukey_data <- as.data.frame(leaf_stats[2])
+anova_data <- as.data.frame(leaf_stats[3])
+
+
+```
+## Save ANOVA and Tukey results to CSV
+Values from ANOVA and Tukey tests were combined into dataframes and saved to 
+the `DATACLEAN` folder under `anova.csv` and `tukey_values.csv`.
+```{r}
+#| warning: false
+#| echo: false
+#| error: false
+
+# --------------------
+# use Tukey data, dunnetts_data is empty
+# write_csv(dunnetts_data, here(DATACLEAN, "dunnett_values.csv"), na = "NA", append = FALSE)
+write_csv(tukey_data, here(DATACLEAN, "tukey_values.csv"), na = "NA", append = FALSE)
+write_csv(anova_data, here(DATACLEAN, "anova.csv"), na = "NA", append = FALSE)
+
+```
+

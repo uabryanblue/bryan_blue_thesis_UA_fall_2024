@@ -1,0 +1,506 @@
+---
+title: "LI-COR Text Log Processing"
+author: "Bryan Blue"
+e-mail: 'bryanblue@arizona.edu'
+date: "Last Generated: `r Sys.Date()`"
+
+execute:
+  echo: false
+format: 
+  html:
+    code-fold: true
+    fig-width: 8
+    fig-height: 6
+  pdf:
+    fig-width: 7
+    fig-height: 5
+---
+
+```{r setup, include=FALSE}
+#| echo: false
+
+# #| tags: [parameters]
+# names = "test"
+
+knitr::opts_chunk$set(echo = TRUE)
+
+# advanced conflict resolution
+# https://conflicted.r-lib.org/
+# install.packages("devtools")
+library(conflicted)
+
+library(tidyverse)
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(ggplot2)
+library(here)
+
+# start in the current project directory
+# this ensures relative paths will work
+# independent of the location the script
+here::here()
+# https://www.regextester.com/ for regex checking
+
+# constants to data paths
+DATARAW <- "data_raw"
+DATACLEAN <- "data_clean"
+DATAUSER <- "data_user"
+FIGSTORAGE <- "figures"
+
+dir.create(file.path(here(),FIGSTORAGE))
+dir.create(file.path(here(),DATAUSER))
+dir.create(file.path(here(),DATACLEAN))
+
+```
+
+*Always Restart R before running any script!*  
+
+# 01_load_LICOR_logs  
+
+__All files (read or written) are assumed to be in UTF-8. The units row contains special characters that will not render unless this is true.__   
+  
+Paths used in this script are absolute and generated using the function `here::here()`. This ensures paths are generated in the OS specific path conventions. `DATARAW`, `DATACLEAN`, `DATAUSER` are three constants for consistent reference to the appropriate folders.  
+  
+Copy all LI-COR text logs to process into the subfolder specified by the `DATARAW` constant. These should never be touched and treated as read only files. Files that start with the regex `^[0-9]{4}-[0-9]{2}-[0-9]{2}` are processed. This is the standard prefix of LI-COR data files.  
+  
+*Loading sequence:*  
+Loads one text log from a LI-COR data set.  
+Reads each chunk of data that contains a line that stars with with `[Header]`.   
+All lines are skipped unless a remarks row is found. This continues until a line with `[Data]` is found.  
+All data and remarks lines are read, and a group number is assigned to keep the related records together.  
+This repeats until the end of the file every time a `[Header]` line is found.  
+  
+The original group names, field names, and units are stored in separate data frames from the first `[Data]` chunk.  
+Some variable names are not unique, e.g., `time`. Therefore, the variable names are a concatenation of the group name, an underscore, and the variable name.  
+e.g., group `SysObs` and variable `time` are converted into a new column name of `SysObs_time`   
+  
+All data loaded by this script are written to a UTF-8, CSV file in the `DATACLEAN` folder.  
+__NOTE:__ To view the files from `DATACLEAN` in Excel, the files MUST be __imported into Excel__ using the import data option; otherwise, the UTF-8 unit values do not import correctly.  
+If the data file is opened directly without using the data import option in Excel, DO NOT "Convert large numbers into scientific notation." Excel may also ask, if there are many 'E' values found, to treat them as exponent values. Do not do this either.  
+  
+## REMARKS:  
+Remarks are found in the `[Header]` and `[Data]` sections.  
+There may be zero or more remarks present in either section.    
+All should be read and concatenated into one comma-delimited value for output as they are read.  
+This means the remarks field can change as data records are read and more remarks are found.  
+  
+Remarks in the LI-COR log start with time followed by a tab character.  
+After the tab there are two possibilities  
+1. "Stability Definition" (ignore)  
+2. the actual remarks text (concatenated to a remarks variable as they are found)  
+  
+__EXAMPLE of REMARKS LINES IN LI-COR LOGFILE__  
+The first line is ignored, while the second is a remark.  
+IGNORE:  
+`12:44:30	Stability Definition:	A (GasEx): Slp<0.3 Per=15	gsw (GasEx): Slp<0.05 Per=15	F (FlrLS): Slp<5 Per=15`  
+Concat to remarks variable:  
+`12:44:44	tc-shade5`  
+```{r load_data_chunks}
+#| warning: false
+#| echo: false
+
+
+# given a fully qualified LI-COR data log file name
+# process it into data frames of the groups, units, var names, data values
+# add in a group number column representing a chunk of [Data], there may be many
+# add in a remarks column that appends all remark lines as they are found in
+# the [Header] section and within the [Data] section
+load_data_chunks <- function(OutFile, OutFileName) {
+  # print("function: load_data_chunks")
+  # print(paste("OutFile:", OutFile))
+  # print(paste("OutFileName:", OutFileName))
+  
+  con <- file(OutFile, "rt")
+  # print("start")
+  
+  
+  # init vars
+  remarks <- "" # used to contain the list of remarks, if any
+  i = 0 # used to specify which group of data is being read
+  dataLines <- data.frame(matrix(ncol = 1, nrow = 0))
+  colnames(dataLines) <- c("original")
+  
+  
+  while (length(oneLine <- 
+                readLines(con, n = 1, skipNul = TRUE, warn = FALSE)) > 0) {
+    
+    
+    # get the remarks in header, add ones in [Data] block later
+    if (str_detect(oneLine, regex("^[0-9]{2}:[0-9]{2}:[0-9]{2}\t")) &
+        !str_detect(oneLine, regex("^[0-9]{2}:[0-9]{2}:[0-9]{2}\tStability Definition:\t"))) 
+    {
+      if (remarks == "") {
+        remarks <- str_replace(oneLine, "\t", " ")
+      } else {
+        oneLine <- str_replace(oneLine, "\t", " ")
+        remarks <- paste(remarks, oneLine, sep = ", ")
+      }
+    }
+    
+    
+    # read all the records in the found [Data] block
+    if (str_detect(oneLine, regex("\\[Data\\]"))) {
+      # print("We found data start")
+      
+      # sequential numbering for each group of [Data] in the file
+      i = i + 1
+      groupNumber = paste("group",i, sep = "")
+      
+      # these three lines appear after [Data] in the file
+      # add additional fields for filename, data group, remarks, and leaftype
+      # NEW FIELD - add into all 3 paste groups
+      dataGroups <- paste("Filenames", "Data", "Data", "Data",  "Data",
+                          readLines(con, n = 1, skipNul = TRUE, warn = FALSE), sep = "\t")
+      dataVars   <- paste("filename", "group", "remarks", "plant_id",  "leaftype",
+                          readLines(con, n = 1, skipNul = TRUE, warn = FALSE), sep = "\t")
+      dataUnits  <- paste("", "", "", "",  "",
+                          readLines(con, n = 1, skipNul = TRUE, warn = FALSE), sep = "\t")
+      
+      # create an empty list to store all of the data records in the found block
+      # read lines until it is not longer a data line
+      while (length(dataLine <- readLines(con, n = 1, skipNul = TRUE, warn = FALSE)) > 0) {
+        
+        # remarks could be here too
+        if (str_detect(dataLine, regex("^[0-9]{2}:[0-9]{2}:[0-9]{2}\t")) &
+            !str_detect(dataLine, regex("^[0-9]{2}:[0-9]{2}:[0-9]{2}\tStability Definition:\t"))) 
+        {
+          if (remarks == "") {
+            remarks <- str_replace(dataLine, "\t", " ")
+          } else {
+            dataLine <- str_replace(dataLine, "\t", " ")
+            remarks <- paste(remarks, dataLine, sep = ", ")
+          }
+        }
+        
+        
+        # lines starts with and integer record number and tab
+        if (str_detect(dataLine, regex("^[0-9]?\t")) &
+            !str_detect(dataLine, regex("^[0-9]{2}:[0-9]{2}:[0-9]{2}\t"))) {
+          # NEW FIELD - add into this paste
+          finalString <- paste(OutFileName, groupNumber, remarks, "", "", dataLine, sep = "\t")
+          dataLines[nrow(dataLines) + 1,] = finalString
+          # } else {
+          #   break
+        }
+        
+        # done reading data lines from the current block
+        # reset remarks for next group of data       
+        if (str_detect(dataLine, regex("\\[Header\\]"))) {
+          remarks <- ""
+          break
+        }
+      }
+    }
+    
+  }
+  # print("stop")
+  close(con)
+  
+  return(list(dataGroups, dataUnits, dataVars, dataLines))
+  
+}
+```
+
+```{r functions}
+#| warning: false
+#| echo: false
+
+
+# TODO: this should be made generic based on the types that are available in a table
+# manipulate the data in valsdf using these varsdf column names
+# special manipulations should go here
+# normal rounding and formatting dates are common manipulations
+fix_types <- function(typesdf) {
+  # print("function: fix_types")
+  # ggplot, other software has trouble with the large values in the data file
+  # SIGDIF specifies the number of significant digits to retain, < 9 works
+  #    some readings are in units that require 4 sig digits, E is in moles, too small, etc.
+  #    Emm in micromoles has good data, not true for all readings
+  # using 8 internally until final results 
+    SIGDIF = 8    # default number of digits for data readings
+
+  # SysObs
+  typesdf$SysObs_date <-     as.POSIXct(typesdf$SysObs_date, format = "%Y%m%d %H:%M:%S")
+  typesdf$SysObs_date <-     as.Date(typesdf$SysObs_date)
+  typesdf$SysObs_obs <-      as.numeric(typesdf$SysObs_obs)
+  typesdf$SysObs_time <-     round(as.numeric(typesdf$SysObs_time))
+  typesdf$SysObs_elapsed <-  round(as.numeric(typesdf$SysObs_elapsed), digits = 0)
+  
+  #GasEx
+  typesdf$GasEx_TIME <-  round(as.numeric(typesdf$GasEx_TIME))
+  typesdf$GasEx_E <-     round(as.numeric(typesdf$GasEx_E), digits = SIGDIF) 
+  typesdf$GasEx_Emm <-   round(as.numeric(typesdf$GasEx_Emm), digits = SIGDIF)
+  typesdf$GasEx_A <-     round(as.numeric(typesdf$GasEx_A), digits = SIGDIF)
+  typesdf$GasEx_Ca <-    round(as.numeric(typesdf$GasEx_Ca), digits = SIGDIF)
+  typesdf$GasEx_Ci <-    round(as.numeric(typesdf$GasEx_Ci), digits = SIGDIF)
+  typesdf$GasEx_Pci <-   round(as.numeric(typesdf$GasEx_Pci), digits = SIGDIF)
+  typesdf$GasEx_gsw <-   round(as.numeric(typesdf$GasEx_gsw), digits = SIGDIF)
+  typesdf$GasEx_RHcham <-   round(as.numeric(typesdf$GasEx_RHcham), digits = SIGDIF)
+  typesdf$GasEx_TleafCnd <- round(as.numeric(typesdf$GasEx_TleafCnd), digits = SIGDIF)
+  typesdf$GasEx_VPcham <-   round(as.numeric(typesdf$GasEx_VPcham), digits = SIGDIF)
+  typesdf$GasEx_VPDleaf <-  round(as.numeric(typesdf$GasEx_VPDleaf), digits = SIGDIF)
+  
+  #FLR
+  typesdf$`FLR_Fv'/Fm'` <-    round(as.numeric(typesdf$`FLR_Fv'/Fm'`), digits = SIGDIF) 
+  typesdf$`FLR_Fv/Fm` <-    round(as.numeric(typesdf$`FLR_Fv/Fm`), digits = SIGDIF) 
+  # typesdf$FLR_Fv_prime_div_Fm_prime <- round(as.numeric(typesdf$FLR_Fv_prime_div_Fm_prime), digits = SIGDIF) # `FLR_Fv'/Fm'`
+  typesdf$FLR_A_fs <-    round(as.numeric(typesdf$FLR_A_fs), digits = SIGDIF)
+  typesdf$FLR_ETR	 <-    round(as.numeric(typesdf$FLR_ETR), digits = SIGDIF)
+  typesdf$FLR_NPQ <-    round(as.numeric(typesdf$FLR_NPQ), digits = SIGDIF)
+  
+  
+  # LeafQ
+  typesdf$LeafQ_Qin <-    round(as.numeric(typesdf$LeafQ_Qin), digits = SIGDIF)
+  
+  # Meas
+  typesdf$Meas_CO2_r<-    round(as.numeric(typesdf$Meas_CO2_r), digits = SIGDIF)
+  typesdf$Meas_Pa	<-    round(as.numeric(typesdf$Meas_Pa), digits = SIGDIF)
+  typesdf$Meas_Tair	<-    round(as.numeric(typesdf$Meas_Tair), digits = SIGDIF)
+  typesdf$Meas_Tleaf<-    round(as.numeric(typesdf$Meas_Tleaf), digits = SIGDIF)
+  
+  return(typesdf) 
+}
+
+
+```
+
+
+
+```{r select_data}
+#| warning: false
+#| echo: false
+#| error: false
+
+select_data <- function(groupsdf, varsdf) {
+  # print("function: select_data")
+  # variable names are not unique, prepend the group to fix it
+  new_field_list <- paste(groupsdf[1,], varsdf[1,], sep = "_")
+  new_field_list <- str_replace_all(new_field_list, " ", "_")
+  
+  colnames(valuesdf) <- new_field_list
+  
+  # set the proper variable types
+  # LI-COR data has values that are not consistent in number of sig digits
+  #        inconsistent such as seconds appear as partial and full seconds in the same column
+  valuesdf <- fix_types(valuesdf)
+  
+  # variable names are not unique, add suffix of the group to fix it
+  new_select_field_list <- paste(select_field_list[1,], select_field_list[2,], sep = "_")
+  colnames(unitsdf) <- new_field_list
+  
+  # create a set of data that the user specified in select_field_list
+  final_data <- valuesdf %>% select(any_of(new_select_field_list))
+  
+  return(new_select_field_list)
+}
+
+```
+
+```{r write_files}
+#| warning: false
+#| echo: false
+#| error: false
+
+write_files <- function(LogFileName, groupsdf, varsdf, unitsdf, valuesdf, final_data) {
+  # print("function: write_files")
+  # write out a text file that Excel can read
+  # this file keep LICOR units in UTF-8 with special characters
+  CleanDataFile <- paste("cleaned_UTF-8", LogFileName, ".csv", sep = '_')
+  # CleanDataFile <- paste(CleanDataFile, "csv", sep = '.')
+  CleanOutput <- here(DATACLEAN, CleanDataFile)
+  
+  # create CSV files for just the groups, variable names and units
+  HeaderOutput <- here(DATACLEAN, "UTF-8_headers.csv")
+  write_csv(groupsdf, HeaderOutput, append = FALSE, col_names = FALSE)
+  write_csv(varsdf, HeaderOutput, append = TRUE, col_names = FALSE)
+  write_csv(unitsdf, HeaderOutput, append = TRUE, col_names = FALSE)
+  
+  # build up the CSV file from the cleaned data by data frame
+  # TODO this is not working, it is the same output as the "selected" data
+  write_csv(groupsdf, CleanOutput, append = FALSE, col_names = FALSE)
+  write_csv(varsdf, CleanOutput, append = TRUE, col_names = FALSE)
+  write_csv(unitsdf, CleanOutput, append = TRUE, col_names = FALSE)
+  write_csv(valuesdf, CleanOutput, append = TRUE, col_names = FALSE)
+  
+  SelectedDataFile <- paste("selected_UTF-8", LogFileName, sep = '_')
+  SelectedDataFile <- paste(SelectedDataFile, "csv", sep = '.')
+  SelectedOutput <- here(DATACLEAN, SelectedDataFile)
+  
+  write_csv(final_data, SelectedOutput, append = FALSE, col_names = TRUE)
+}
+
+```
+
+```{r add_user_variables}
+#| warning: false
+#| echo: false
+#| error: false
+
+build_select_fieldlist <- function(groupsdf, varsdf) {
+  # select the names for the columns of interest
+  # UTF-8 CSV text file to keep units in proper form
+  # only the variable names will appear in the selected output file
+  # select_logdata_fields.csv must exist in the DATAUSER directory
+  # three lines are required, one for the group, variable, and units
+  # as they appear in the LICOR logs
+  # print("function: build_select_fieldlist()")
+  
+  SelectDataFile <- "select_logdata_fields.csv"
+  SelectInput <- here(DATAUSER, "input", SelectDataFile)
+  select_field_list <- read_csv(SelectInput, 
+                                col_names = FALSE, 
+                                n_max = 2,
+                                show_col_types = FALSE) 
+  
+  # Append new user defined columns to the front of data
+  # row #1 = group name, row #2 = variable name
+  sysdf <- data.frame(matrix(ncol = 5, nrow = 2))
+  # the groups to add
+  sysdf[1,1] <- groupsdf[1]
+  sysdf[1,2] <- groupsdf[2]
+  sysdf[1,3] <- groupsdf[3]
+  sysdf[1,4] <- groupsdf[4]
+  sysdf[1,5] <- groupsdf[5]
+  
+  # the variable names to add
+  sysdf[2,1] <- varsdf[1]
+  sysdf[2,2] <- varsdf[2]
+  sysdf[2,3] <- varsdf[3]
+  sysdf[2,4] <- varsdf[4]
+  sysdf[2,5] <- varsdf[5]
+  # select_field_list <- data.frame(sysdf, select_field_list)
+  select_field_list <- cbind(sysdf, select_field_list)
+  
+  return(select_field_list)
+}
+```
+
+# Processing Data from `DATARAW` folder  
+In the folder `DATACLEAN` a file named *UTF-8_headers.csv* is created that contains the first three rows of a `[DATA] block. Group name, Unit, Variable names are stored in UTF-8 to retain special characters, superscripts, etc.    
+  
+## Variable Names  
+Variable names are not unique and internal names are created using a prefix of Group name "_" Variable name.  
+e.g. LIC-COR group = `GasEx`, variable = `A` the final variable name is `GasEx_A`  
+Any spaces found in variable names are replaced with an underscore `_`.  
+  
+## Subset of Data  
+There are over 250 fields in the LI-COR data and most are not of interest. Fields contained in the folder `DATAUSER` named `selected_log_data.csv` are used to generate an output file that contains only those fields.  
+### partial bad data 3-13-2024
+*LI-COR Q was specified in the experiment to 700.* Some LI-COR `Q` values were set to less than or greater than 700. These were filtered out. CO2 values that were not ambient were also filtered out.    
+
+```{r main}
+#| warning: false
+#| echo: false
+#| error: false
+
+main <- function(LogFileName) {
+  # print("function: main()")
+
+  LogFullFileName <- here(DATARAW, LogFileName)
+  
+  # parse and load all of the LI-COR text logs, return as a list
+  # output[[1]] = groups
+  # output[[2]] = units
+  # output[[3]] = variables
+  # output[[4]][,1] = data values
+  output <- load_data_chunks(LogFullFileName, LogFileName)
+  
+  # output contains tabular data broken into the group, units, var names, and values
+  # break them into their own tables for further use
+  groupsdf <- data.frame(do.call('rbind',strsplit(as.character(output[[1]]),'\t',fixed=TRUE)))
+  unitsdf <- data.frame(do.call('rbind',strsplit(as.character(output[[2]]),'\t',fixed=TRUE)))
+  varsdf <- data.frame(do.call('rbind',strsplit(as.character(output[[3]]),'\t',fixed=TRUE)))
+  valuesdf <- data.frame(do.call('rbind',strsplit(as.character(output[[4]][,1]),'\t',fixed=TRUE)))
+
+  # LICOR variable names are not unique, add the group as a prefix to fix it "GasEx_A"
+  full_field_list <- paste(groupsdf[1,], varsdf[1,], sep = "_")
+  
+  # LICOR variable names may contain spaces and other UTF-8 special characters
+  # replace them with appropriate values for raw data handling
+  full_field_list <- str_replace_all(full_field_list, " ", "_")
+  # full_field_list <- str_replace_all(full_field_list, "/", "_div_")
+  # full_field_list <- str_replace_all(full_field_list, "'", "_prime_")
+  
+  # df that need to have column names set to cleaned up field lists
+  colnames(valuesdf) <- full_field_list
+  colnames(unitsdf) <- full_field_list
+  
+  # set the proper variable types
+  # LICOR data has values that are not consistent in number of sig digits
+  # inconsistent such as seconds appear as partial and full seconds in the same column
+  # convert all fields that can be converted to the correct type based on the data
+  # TODO is type.convert() the best answer for global type updates?
+  ############################
+  # valuesdf <- type.convert(valuesdf, as.is = TRUE, numerals = "allow.loss") 
+  # override of any types that may not convert as expected
+  valuesdf <- fix_types(valuesdf)
+  
+  
+  # TODO this function needs implemented ----------------------------
+  # valuesdf <- remove_outliers(valuesdf, LogFileName)
+  # NOT WORKING, TOO MANY ARE FLAGGED
+  
+  
+  # create select list of groups and variables of interest
+  select_field_list <- build_select_fieldlist(groupsdf, varsdf)
+  # LICOR variable names are not unique, add the group as a suffix to fix it
+  select_field_list <- paste(select_field_list[1,], select_field_list[2,], sep = "_")
+  # LICOR variable names may contain spaces, replace with hyphens
+  select_field_list <- str_replace_all(select_field_list, " ", "_")
+  
+  
+  # create a set of data that the user specified in select_field_list
+  final_data <- valuesdf %>% select(any_of(select_field_list))
+  
+  # write data
+  write_files(LogFileName, groupsdf, varsdf, unitsdf, valuesdf, final_data)
+  
+  return(list(groupsdf, varsdf, unitsdf, valuesdf, final_data))
+}
+```
+
+
+## List of Processed Files
+
+```{r process_files}
+#| warning: false
+#| echo: false
+#| error: false
+
+# NOTE LICOR logs default to start with the date "YYYY-MM-DD"
+# this ensures only these files are read
+# if files are not saved this way, it will not work
+FileList <- list.files(here(DATARAW), pattern = "^[0-9]{4}-[0-9]{2}-[0-9]{2}")
+# TODO: 11/17/2024 data is in a different structure, columns are different
+#       Code will need to be modified to account for the columns of interest
+#       for any file of "all" data
+AllDataFile <- here(DATAUSER, "UTF-8_all_licor_data.csv")
+
+for (FileName in FileList) {
+  print(FileName)
+  maindf <- main(FileName)
+  write_csv(as.data.frame(maindf[4]), AllDataFile, append = TRUE, col_names = FALSE)
+
+  # maindf contains the final results if anything is needed
+  # groupsdf, varsdf, unitsdf, valuesdf, final_data
+  # 1 - groupsdf
+  # 2 - units
+  # 3 - varsdf
+  # 4 - valuesdf (all data)
+  # 5 - final_data (selected data df)
+  
+  
+  
+  # build up the CSV file from the cleaned data by data frame
+  # TODO this is not working, it is the same output as the "selected" data
+  # write_csv(maindf[5], AllDataFile, append = TRUE, col_names = FALSE)
+  # write_csv(groupsdf, AllDataFile, append = FALSE, col_names = FALSE)
+  # write_csv(varsdf, AllDataFile, append = TRUE, col_names = FALSE)
+  # write_csv(unitsdf, AllDataFile, append = TRUE, col_names = FALSE)
+  # write_csv(valuesdf, AllDataFile, append = TRUE, col_names = FALSE)
+  
+}
+
+```
+
