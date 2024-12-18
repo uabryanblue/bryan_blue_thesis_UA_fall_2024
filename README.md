@@ -1,7 +1,19 @@
 repository: bryan_blue_thesis_UA_fall_2024
 
-# EFFECTS OF IN SITU LEAF WARMING ON NET PHOTOSYNTHETIC CO~2~ ASSIMILATION IN *THEOBROMA CACAO* L. (cacao):  A STUDY IN THE BIOSPHERE 2 TROPICAL RAINFOREST
+# EFFECTS OF IN SITU LEAF WARMING ON NET PHOTOSYNTHETIC CO2 ASSIMILATION IN *THEOBROMA CACAO* L. (cacao):  A STUDY IN THE BIOSPHERE 2 TROPICAL RAINFOREST
 
+### DATA_LOGGER_ANALYSIS
+
+R code to analyze the heating device and climate sensor data
+	
+### LICOR_ANALYSIS
+
+R code to analyze LI-COR logs and associated A, gsw, Emm, VPDleaf responses for the experiment.  
+Contains a LI-COR text log parser.
+ 
+### LIGHT_CURVE_ANALYSIS
+
+R code to create a light curve figure from A response to increasing Q from a cacao leaf in the Biosphere 2 tropical rainforest
 
 
 ### Additional data and code links
