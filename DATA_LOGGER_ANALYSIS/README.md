@@ -2,7 +2,7 @@ repository: bryan_blue_thesis_UA_fall_2024
 
 # EFFECTS OF IN SITU LEAF WARMING ON NET PHOTOSYNTHETIC CO~2~ ASSIMILATION IN *THEOBROMA CACAO* L. (cacao):  A STUDY IN THE BIOSPHERE 2 TROPICAL RAINFOREST
 
-Bryan P. Blue ^a^, Bonnie L. Hurwitz ^b^ , Gene A. Giacomelli ^b^ , Joost van Haren ^c,d^
+Bryan P. Blue, Bonnie L. Hurwitz, Gene A. Giacomelli, Joost van Haren
 
 A partial thesis fulfillment to the Department of Biosystems Engineering, College of Agriculture, Life and Environmental Sciences at the University of Arizona.
 
