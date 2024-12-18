@@ -41,11 +41,11 @@ Quarto scripts are run in sequential order based on the prefix of the filename. 
 
 These scripts load, scrub and create files for future analysis.
 
-lvl1 can be ignored unless there is interest in the rain forest basin conditions next to the mountain.
+lvl1 can be ignored unless there is interest in the rainforest basin conditions next to the mountain.
 
-lvl2 = experiment 2 on the terrace\
-lvl3 = experiment 3-1 mountain top, 1st of 2 experiments\
-lvl3a = experiment 3-2 mountain top, 2nd of 2 experiments
+lvl2 = experiment 2 on the terrace\  
+lvl3 = experiment 3-1 mountain top, 1st of 2 experiments\  
+lvl3a = experiment 3-2 mountain top, 2nd of 2 experiments  
 
 `00_wrangle_DL_logs.qmd01_lvl1_DL_logs.qmd01_lvl2_DL_logs.qmd01_lvl3_DL_logs.qmd01_lvl3a_DL_logs.qmd`
 
@@ -53,12 +53,12 @@ lvl3a = experiment 3-2 mountain top, 2nd of 2 experiments
 
 *("Temperature Relay Control" aka TRC in the code)*
 
-`02_TRC_analysis.qmd`\
+`02_TRC_analysis.qmd`\  
 The leaf heating portion of the experiment data is analyzed in this script. There are large sections of data exploration as well as the statistical results. Only portions were used in the thesis or article based on explanation needs.
 
 # Climate Analysis
 
 *(Installation specific temperature/relative humidity and Biosphere 2 tower sensor data.)*
 
-`02_climate_analysis.qmd`\
+`02_climate_analysis.qmd`\  
 There are large sections of data exploration as well as the statistical results. Only portions were used in the thesis or article based on explanation needs.
