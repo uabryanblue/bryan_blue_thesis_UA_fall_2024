@@ -19,5 +19,3 @@ Raw LI-COR data from weekly measurements. Excel and text log files are available
 ### Light_Curves
 
 Net photosynthetic CO~2~ assimilation rates for a single cacao leaf in the Biosphere 2 tropical rainforest biome. This data was used to determine the light intensity for measurements using the LI-COR sampling device.
-
-
